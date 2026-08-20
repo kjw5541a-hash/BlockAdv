@@ -28,6 +28,10 @@
   #overlay h1 { font-size: 28px; margin: 0 0 12px; }
   #overlay p { font-size: 14px; opacity: 0.8; margin: 4px 0; max-width: 420px; line-height: 1.6; }
   #overlay.hidden { display: none; }
+  #render-distance { margin-top: 18px; cursor: default; }
+  #render-distance label { font-size: 13px; opacity: 0.85; display: block; margin-bottom: 6px; }
+  #render-distance input { width: 220px; vertical-align: middle; }
+  #render-distance span { display: inline-block; width: 24px; text-align: left; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -36,7 +40,11 @@
 <div id="overlay">
   <h1>BlockAdv</h1>
   <p id="overlay-msg">클릭(또는 탭)해서 시작 &mdash; WASD 이동, 마우스로 시점 회전, Space/Shift로 위아래 이동</p>
-  <p style="opacity:0.5; font-size:12px;">1단계 검증 빌드: 정적 청크 렌더링</p>
+  <p style="opacity:0.5; font-size:12px;">2단계 검증 빌드: 청크 동적 로딩/언로딩 + 무한 지형</p>
+  <div id="render-distance">
+    <label for="render-distance-slider">렌더 거리 (반경 <span id="render-distance-value">4</span>청크)</label>
+    <input type="range" id="render-distance-slider" min="1" max="8" step="1" value="4">
+  </div>
 </div>
 <script>
 /**
@@ -49,8 +57,9 @@
 </script>
 <script>
 'use strict';
-/* ===================== BlockAdv - Step 1: Static Chunk Rendering =====================
- * 청크 기반 무한 생성의 첫 단계: 고정된 청크 N개를 렌더링하고 카메라로 자유롭게 둘러본다.
+/* ===================== BlockAdv - Step 2: Dynamic Chunk Loading =====================
+ * 플레이어 위치 기준 반경 N청크만 유지: 범위에 들어온 청크는 생성+메싱, 벗어난 청크는
+ * dispose 후 제거. 프레임 예산을 넘지 않도록 청크당 1개씩만 생성/메싱한다.
  * 아키텍처 원칙: 청크당 메시 1개(face culling 병합), 텍스처 아틀라스 1장,
  * 동적 라이트 없음(방향광+환경광만), 정점은 Uint8Array 블록 ID.
  * ======================================================================================= */
@@ -298,46 +307,91 @@ class Chunk {
     if (this.mesh) {
       this.mesh.geometry.dispose();
       this.mesh.material.dispose();
+      this.mesh = null;
     }
   }
 }
 
-// ---------- 월드 (고정 청크 N x N, 1단계 검증용) ----------
-class StaticWorld {
-  constructor(scene, atlasTexture, radiusInChunks, seed) {
+// ---------- 월드 (플레이어 중심 반경 N청크 동적 로딩/언로딩) ----------
+class DynamicWorld {
+  constructor(scene, atlasTexture, seed, radiusInChunks) {
     this.scene = scene;
     this.atlasTexture = atlasTexture;
     this.noise = new ValueNoise2D(seed);
-    this.chunks = new Map();
+    this.chunks = new Map();      // key -> Chunk (블록 데이터는 있지만 메시는 아직 없을 수 있음)
+    this.meshQueue = [];          // 메싱 대기열 (프레임당 1개씩 처리)
+    this.queuedKeys = new Set();  // meshQueue 중복 방지
     this.radius = radiusInChunks;
-    this._generate();
+    this._centerCx = null;
+    this._centerCz = null;
   }
   key(cx, cz) { return cx + ',' + cz; }
 
   getBlockWorld(wx, y, wz) {
     const cx = Math.floor(wx / CHUNK_X), cz = Math.floor(wz / CHUNK_Z);
     const chunk = this.chunks.get(this.key(cx, cz));
-    if (!chunk) return BLOCK.AIR; // 범위 밖은 공기 취급 (1단계는 고정 청크만 존재)
+    if (!chunk) return BLOCK.AIR; // 아직 로드 안 된 청크는 공기 취급 (안전 쪽으로 face를 더 그림)
     const lx = ((wx % CHUNK_X) + CHUNK_X) % CHUNK_X;
     const lz = ((wz % CHUNK_Z) + CHUNK_Z) % CHUNK_Z;
     return chunk.get(lx, y, lz);
   }
 
-  _generate() {
+  setRadius(r) {
+    this.radius = r;
+    this._centerCx = null; // 강제로 다시 계산해서 즉시 반영
+  }
+
+  // 플레이어 월드 좌표 기준으로 로드/언로드할 청크 집합을 갱신
+  update(playerWx, playerWz) {
+    const cx = Math.floor(playerWx / CHUNK_X);
+    const cz = Math.floor(playerWz / CHUNK_Z);
+    if (cx === this._centerCx && cz === this._centerCz) return; // 같은 청크 안이면 변화 없음
+    this._centerCx = cx; this._centerCz = cz;
+
     const r = this.radius;
-    for (let cx = -r; cx <= r; cx++) {
-      for (let cz = -r; cz <= r; cz++) {
-        const chunk = new Chunk(cx, cz, this.noise);
-        this.chunks.set(this.key(cx, cz), chunk);
+    const desired = new Set();
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dz = -r; dz <= r; dz++) {
+        desired.add(this.key(cx + dx, cz + dz));
       }
     }
-    // 모든 청크 데이터가 준비된 뒤 메싱 (경계 이웃 조회가 가능하도록)
-    for (const chunk of this.chunks.values()) {
-      const mesh = chunk.buildMesh(this.atlasTexture, (wx, y, wz) => this.getBlockWorld(wx, y, wz));
-      this.scene.add(mesh);
+
+    // 새로 필요한 청크: 블록 데이터는 즉시 생성(가벼움), 메싱은 대기열에 넣어 분할 처리
+    for (const k of desired) {
+      if (this.chunks.has(k)) continue;
+      const [kcx, kcz] = k.split(',').map(Number);
+      const chunk = new Chunk(kcx, kcz, this.noise);
+      this.chunks.set(k, chunk);
+      if (!this.queuedKeys.has(k)) {
+        this.meshQueue.push(k);
+        this.queuedKeys.add(k);
+      }
     }
+
+    // 범위 밖 청크: 메시 dispose 후 제거
+    for (const [k, chunk] of this.chunks) {
+      if (desired.has(k)) continue;
+      if (chunk.mesh) { this.scene.remove(chunk.mesh); chunk.dispose(); }
+      this.chunks.delete(k);
+      this.queuedKeys.delete(k);
+    }
+    // 대기열에서도 범위 밖으로 나간 항목 정리
+    this.meshQueue = this.meshQueue.filter((k) => desired.has(k));
   }
+
+  // 프레임당 최대 1개 청크만 생성/메싱해서 메인 스레드 프레임 예산을 넘지 않게 함
+  processQueue() {
+    if (this.meshQueue.length === 0) return;
+    const k = this.meshQueue.shift();
+    this.queuedKeys.delete(k);
+    const chunk = this.chunks.get(k);
+    if (!chunk) return; // 대기 중 이미 범위 밖으로 밀려나 제거된 경우
+    const mesh = chunk.buildMesh(this.atlasTexture, (wx, y, wz) => this.getBlockWorld(wx, y, wz));
+    this.scene.add(mesh);
+  }
+
   get chunkCount() { return this.chunks.size; }
+  get pendingCount() { return this.meshQueue.length; }
 }
 
 // ---------- 씬 / 렌더러 / 카메라 ----------
@@ -369,13 +423,14 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// ---------- 월드 생성 (3x3 청크, 반경 1) ----------
+// ---------- 월드 생성 (플레이어 중심 동적 로딩, 기본 반경 4청크) ----------
+// 기본값은 기획안 3번 항목 기준. 실기기 성능 테스트 결과에 따라 조정 예정(9단계).
+const DEFAULT_RENDER_RADIUS = 4;
 const atlasTexture = makeAtlasTexture();
-const world = new StaticWorld(scene, atlasTexture, 1, 20260820);
+const world = new DynamicWorld(scene, atlasTexture, 20260820, DEFAULT_RENDER_RADIUS);
 
 // ---------- 카메라 컨트롤: 데스크탑 포인터락 + WASD 자유비행 ----------
 const overlay = document.getElementById('overlay');
-const overlayMsg = document.getElementById('overlay-msg');
 const keys = new Set();
 let yaw = 0, pitch = -0.35;
 const MOVE_SPEED = 18;
@@ -388,6 +443,17 @@ function requestLock() {
 }
 overlay.addEventListener('click', () => {
   requestLock();
+});
+
+// 렌더 거리 슬라이더 (오버레이 클릭 시 포인터락이 걸리지 않도록 이벤트 전파 차단)
+const radiusSlider = document.getElementById('render-distance-slider');
+const radiusValueLabel = document.getElementById('render-distance-value');
+radiusSlider.addEventListener('click', (e) => e.stopPropagation());
+radiusSlider.addEventListener('input', (e) => {
+  e.stopPropagation();
+  const r = parseInt(e.target.value, 10);
+  radiusValueLabel.textContent = r;
+  world.setRadius(r);
 });
 document.addEventListener('pointerlockchange', () => {
   overlay.classList.toggle('hidden', document.pointerLockElement === canvas);
@@ -450,8 +516,11 @@ function animate() {
     camera.position.add(move);
   }
 
+  world.update(camera.position.x, camera.position.z);
+  world.processQueue();
+
   hud.textContent =
-    `FPS ${fpsSmoothed.toFixed(0)} | 청크 ${world.chunkCount}개 | ` +
+    `FPS ${fpsSmoothed.toFixed(0)} | 청크 ${world.chunkCount}개 (대기 ${world.pendingCount}) | ` +
     `pos (${camera.position.x.toFixed(1)}, ${camera.position.y.toFixed(1)}, ${camera.position.z.toFixed(1)})`;
 
   renderer.render(scene, camera);
