@@ -1,0 +1,10 @@
+{
+  "name": "BlockAdv",
+  "short_name": "BlockAdv",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#87ceeb",
+  "theme_color": "#87ceeb"
+}
