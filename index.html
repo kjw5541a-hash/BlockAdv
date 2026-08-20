@@ -26,10 +26,42 @@
     overflow: hidden; pointer-events: none; z-index: 10; opacity: 0;
   }
   #mine-progress-fill { height: 100%; width: 0%; background: #fff; }
-  #hotbar-hint {
+
+  .inv-slot {
+    width: 40px; height: 40px; box-sizing: border-box;
+    background-color: rgba(255,255,255,0.08); border: 2px solid rgba(255,255,255,0.25);
+    border-radius: 4px; position: relative; user-select: none;
+  }
+  .inv-slot .icon {
+    position: absolute; inset: 4px; image-rendering: pixelated; background-repeat: no-repeat;
+    pointer-events: none;
+  }
+  .inv-slot .count {
+    position: absolute; right: 2px; bottom: 0px; font-size: 11px; color: #fff;
+    text-shadow: 0 0 2px #000, 0 0 2px #000; pointer-events: none; font-variant-numeric: tabular-nums;
+  }
+  .inv-slot.selected { border-color: #fff; box-shadow: 0 0 4px rgba(255,255,255,0.8); }
+
+  #hotbar {
     position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
-    color: #fff; font-size: 12px; text-shadow: 0 0 3px #000, 0 0 3px #000;
-    pointer-events: none; z-index: 10; user-select: none; white-space: nowrap;
+    display: flex; gap: 4px; z-index: 10;
+  }
+
+  #inventory-panel {
+    position: fixed; inset: 0; background: rgba(10,14,20,0.85); z-index: 90;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+  }
+  #inventory-panel.hidden { display: none; }
+  #inventory-panel h2 { color: #fff; margin: 0; font-size: 16px; font-weight: normal; opacity: 0.85; }
+  #inventory-grid {
+    display: grid; grid-template-columns: repeat(9, 40px); gap: 4px;
+  }
+  #inventory-hotbar-mirror {
+    display: grid; grid-template-columns: repeat(9, 40px); gap: 4px;
+  }
+  #drag-ghost {
+    position: fixed; width: 32px; height: 32px; pointer-events: none; z-index: 200;
+    image-rendering: pixelated; background-repeat: no-repeat; display: none;
   }
   #overlay {
     position: fixed; inset: 0; background: rgba(10,14,20,0.92); color: #fff;
@@ -49,12 +81,18 @@
 <div id="hud"></div>
 <div id="crosshair"></div>
 <div id="mine-progress"><div id="mine-progress-fill"></div></div>
-<div id="hotbar-hint"></div>
+<div id="hotbar"></div>
+<div id="drag-ghost"></div>
+<div id="inventory-panel" class="hidden">
+  <h2>인벤토리 (E 또는 Esc로 닫기, 드래그로 정리)</h2>
+  <div id="inventory-grid"></div>
+  <div id="inventory-hotbar-mirror"></div>
+</div>
 <div id="overlay">
   <h1>BlockAdv</h1>
   <p id="overlay-msg">클릭(또는 탭)해서 시작 &mdash; WASD 이동, 마우스로 시점 회전, Space/Shift로 위아래 이동</p>
-  <p>좌클릭: 채굴 (홀드) / 우클릭: 설치 / 숫자키 1~7: 설치할 블록 선택</p>
-  <p style="opacity:0.5; font-size:12px;">3단계 검증 빌드: 블록 채굴/설치 (레이캐스팅). 터치 채굴/설치는 7단계에서 붙일 예정 &mdash; 지금은 데스크탑 마우스로만 동작합니다.</p>
+  <p>좌클릭: 채굴 (홀드) / 우클릭: 설치(선택한 핫바 칸) / 숫자키 1~9: 핫바 선택 / E: 인벤토리</p>
+  <p style="opacity:0.5; font-size:12px;">4단계 검증 빌드: 인벤토리 + 핫바 UI. 인벤토리 드래그는 7단계 전까지 데스크탑 마우스로만 동작합니다.</p>
   <div id="render-distance">
     <label for="render-distance-slider">렌더 거리 (반경 <span id="render-distance-value">4</span>청크)</label>
     <input type="range" id="render-distance-slider" min="1" max="8" step="1" value="4">
@@ -71,9 +109,10 @@
 </script>
 <script>
 'use strict';
-/* ===================== BlockAdv - Step 2: Dynamic Chunk Loading =====================
- * 플레이어 위치 기준 반경 N청크만 유지: 범위에 들어온 청크는 생성+메싱, 벗어난 청크는
- * dispose 후 제거. 프레임 예산을 넘지 않도록 청크당 1개씩만 생성/메싱한다.
+/* ===================== BlockAdv - Step 4: Inventory + Hotbar UI =====================
+ * 채굴한 블록은 인벤토리(핫바 9칸 + 보관함 27칸)에 스택으로 쌓인다. 설치는 선택된
+ * 핫바 칸의 아이템을 소모한다. 인벤토리 창은 E로 열고 닫으며, 드래그앤드롭으로
+ * 슬롯 간 아이템을 옮길 수 있다(데스크탑 마우스 전용, 터치는 7단계에서).
  * 아키텍처 원칙: 청크당 메시 1개(face culling 병합), 텍스처 아틀라스 1장,
  * 동적 라이트 없음(방향광+환경광만), 정점은 Uint8Array 블록 ID.
  * ======================================================================================= */
@@ -217,7 +256,7 @@ function makeAtlasTexture() {
   tex.minFilter = THREE.NearestFilter;
   tex.generateMipmaps = false;
   tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
+  return { texture: tex, canvas };
 }
 
 // ---------- 청크 ----------
@@ -510,7 +549,7 @@ window.addEventListener('resize', () => {
 // ---------- 월드 생성 (플레이어 중심 동적 로딩, 기본 반경 4청크) ----------
 // 기본값은 기획안 3번 항목 기준. 실기기 성능 테스트 결과에 따라 조정 예정(9단계).
 const DEFAULT_RENDER_RADIUS = 4;
-const atlasTexture = makeAtlasTexture();
+const { texture: atlasTexture, canvas: atlasCanvas } = makeAtlasTexture();
 const world = new DynamicWorld(scene, atlasTexture, 20260820, DEFAULT_RENDER_RADIUS);
 
 // ---------- 블록 채굴/설치 ----------
@@ -522,9 +561,177 @@ const highlightBox = new THREE.LineSegments(
 highlightBox.visible = false;
 scene.add(highlightBox);
 
-// 인벤토리는 4단계에서 붙임. 지금은 숫자키 1~7로 설치할 블록을 고른다(테스트용).
-let selectedBlock = BLOCK.STONE;
-const PLACEABLE_ORDER = [BLOCK.GRASS, BLOCK.DIRT, BLOCK.STONE, BLOCK.SAND, BLOCK.LOG, BLOCK.PLANKS, BLOCK.LEAVES];
+// ---------- 인벤토리 + 핫바 ----------
+// slots[0..8] = 핫바, slots[9..35] = 보관함(3행 x 9열). 하나의 배열로 관리해서
+// 드래그앤드롭 로직을 핫바/보관함 구분 없이 인덱스만으로 처리한다.
+const HOTBAR_SIZE = 9;
+const INV_ROWS = 3, INV_COLS = 9;
+const TOTAL_SLOTS = HOTBAR_SIZE + INV_ROWS * INV_COLS;
+const MAX_STACK = 64;
+const slots = new Array(TOTAL_SLOTS).fill(null); // {id, count} | null
+let selectedHotbar = 0;
+
+const ICON_SIZE = 32;
+const atlasDataUrl = atlasCanvas.toDataURL();
+function tileIconStyle(el, tileIdx) {
+  const tx = tileIdx % ATLAS_COLS, ty = Math.floor(tileIdx / ATLAS_COLS);
+  el.style.backgroundImage = `url(${atlasDataUrl})`;
+  el.style.backgroundSize = `${ATLAS_COLS * ICON_SIZE}px ${ATLAS_ROWS * ICON_SIZE}px`;
+  el.style.backgroundPosition = `-${tx * ICON_SIZE}px -${ty * ICON_SIZE}px`;
+}
+
+// 채굴로 얻은 블록을 인벤토리에 넣는다: 같은 종류 스택에 먼저 채우고, 없으면 빈 칸에 새로 놓는다.
+function addItem(blockId, count = 1) {
+  for (let i = 0; i < TOTAL_SLOTS && count > 0; i++) {
+    const s = slots[i];
+    if (s && s.id === blockId && s.count < MAX_STACK) {
+      const add = Math.min(count, MAX_STACK - s.count);
+      s.count += add; count -= add;
+    }
+  }
+  for (let i = 0; i < TOTAL_SLOTS && count > 0; i++) {
+    if (!slots[i]) {
+      const add = Math.min(count, MAX_STACK);
+      slots[i] = { id: blockId, count: add };
+      count -= add;
+    }
+  }
+  renderSlots();
+  return count === 0; // false면 인벤토리가 가득 차서 일부/전부 못 넣음
+}
+
+let inventoryOpen = false;
+const invPanel = document.getElementById('inventory-panel');
+const hotbarEl = document.getElementById('hotbar');
+const invGridEl = document.getElementById('inventory-grid');
+const invHotbarMirrorEl = document.getElementById('inventory-hotbar-mirror');
+const dragGhost = document.getElementById('drag-ghost');
+
+function makeSlotEl(index) {
+  const el = document.createElement('div');
+  el.className = 'inv-slot';
+  el.dataset.slotIndex = String(index);
+  const icon = document.createElement('div');
+  icon.className = 'icon';
+  const count = document.createElement('div');
+  count.className = 'count';
+  el.appendChild(icon);
+  el.appendChild(count);
+  return el;
+}
+
+const hotbarSlotEls = [];
+const invSlotEls = []; // 보관함(9~35)만
+for (let i = 0; i < HOTBAR_SIZE; i++) {
+  const el = makeSlotEl(i);
+  hotbarEl.appendChild(el);
+  hotbarSlotEls.push(el);
+}
+for (let i = HOTBAR_SIZE; i < TOTAL_SLOTS; i++) {
+  const el = makeSlotEl(i);
+  invGridEl.appendChild(el);
+  invSlotEls.push(el);
+}
+// 인벤토리 패널 안에도 핫바를 그대로 미러링해서 보여준다(같은 슬롯 엘리먼트를 만들지만 같은 index를 가리킴)
+const invMirrorEls = [];
+for (let i = 0; i < HOTBAR_SIZE; i++) {
+  const el = makeSlotEl(i);
+  invHotbarMirrorEl.appendChild(el);
+  invMirrorEls.push(el);
+}
+
+function renderSlotEl(el, index) {
+  const s = slots[index];
+  const icon = el.querySelector('.icon');
+  const count = el.querySelector('.count');
+  if (s) {
+    icon.style.display = 'block';
+    tileIconStyle(icon, BLOCK_TILES[s.id][0]);
+    count.textContent = s.count > 1 ? String(s.count) : '';
+    el.title = BLOCK_NAME_KO[s.id] || '';
+  } else {
+    icon.style.display = 'none';
+    count.textContent = '';
+    el.removeAttribute('title');
+  }
+  el.classList.toggle('selected', index === selectedHotbar);
+}
+
+function renderSlots() {
+  for (let i = 0; i < HOTBAR_SIZE; i++) renderSlotEl(hotbarSlotEls[i], i);
+  for (let i = 0; i < HOTBAR_SIZE; i++) renderSlotEl(invMirrorEls[i], i);
+  for (let i = HOTBAR_SIZE; i < TOTAL_SLOTS; i++) renderSlotEl(invSlotEls[i - HOTBAR_SIZE], i);
+}
+renderSlots();
+
+function setInventoryOpen(open) {
+  inventoryOpen = open;
+  invPanel.classList.toggle('hidden', !open);
+  hotbarEl.style.visibility = open ? 'hidden' : 'visible';
+  if (open) {
+    if (document.pointerLockElement === canvas) document.exitPointerLock();
+    overlay.classList.add('hidden');
+  } else {
+    requestLock();
+  }
+}
+
+// 드래그앤드롭: 슬롯 하나를 집어서 다른 슬롯에 놓는다 (데스크탑 마우스 전용, 터치는 7단계에서)
+let heldItem = null, heldFromIndex = -1;
+function slotAt(el) { return el ? parseInt(el.dataset.slotIndex, 10) : -1; }
+
+function onSlotMouseDown(e) {
+  const el = e.target.closest('.inv-slot');
+  if (!el) return;
+  const i = slotAt(el);
+  if (slots[i] == null) return;
+  heldItem = slots[i]; heldFromIndex = i;
+  slots[i] = null;
+  renderSlots();
+  dragGhost.style.display = 'block';
+  tileIconStyle(dragGhost, BLOCK_TILES[heldItem.id][0]);
+  moveGhost(e.clientX, e.clientY);
+  e.preventDefault();
+}
+function moveGhost(x, y) {
+  dragGhost.style.left = `${x - ICON_SIZE / 2}px`;
+  dragGhost.style.top = `${y - ICON_SIZE / 2}px`;
+}
+document.addEventListener('mousemove', (e) => { if (heldItem) moveGhost(e.clientX, e.clientY); });
+document.addEventListener('mouseup', (e) => {
+  if (!heldItem) return;
+  const el = e.target.closest('.inv-slot');
+  const i = slotAt(el);
+  if (i >= 0) {
+    const existing = slots[i];
+    if (!existing) {
+      slots[i] = heldItem; heldItem = null;
+    } else if (existing.id === heldItem.id) {
+      const total = existing.count + heldItem.count;
+      existing.count = Math.min(MAX_STACK, total);
+      const leftover = total - existing.count;
+      heldItem = leftover > 0 ? { id: heldItem.id, count: leftover } : null;
+    } else {
+      slots[i] = heldItem; heldItem = existing;
+    }
+  }
+  if (heldItem) {
+    // 빈 슬롯 위에서 놓지 않았으면 원래 자리로 돌려줌
+    if (slots[heldFromIndex] == null) { slots[heldFromIndex] = heldItem; heldItem = null; }
+  }
+  heldFromIndex = -1;
+  dragGhost.style.display = 'none';
+  renderSlots();
+});
+invPanel.addEventListener('mousedown', onSlotMouseDown);
+hotbarEl.addEventListener('mousedown', (e) => {
+  // 플레이 중 핫바는 클릭으로 슬롯 선택만 가능(드래그는 인벤토리 열었을 때만)
+  if (!inventoryOpen) {
+    const el = e.target.closest('.inv-slot');
+    if (el) selectedHotbar = slotAt(el);
+    renderSlots();
+  }
+});
 
 let currentTarget = null; // raycastVoxels 결과
 let miningProgress = 0;   // 0~1
@@ -545,12 +752,17 @@ function updateTarget() {
 }
 
 function tryPlace() {
-  if (!currentTarget) return;
+  if (!currentTarget || inventoryOpen) return;
+  const held = slots[selectedHotbar];
+  if (!held) return; // 선택한 핫바 칸이 비어있으면 설치 불가
   const [px, py, pz] = currentTarget.place;
   // 플레이어 발밑/머리 위치와 겹치는 자리에는 설치하지 않음(카메라 위치 기준 대략 판정)
   const cam = camera.position;
   if (Math.floor(cam.x) === px && Math.floor(cam.z) === pz && (Math.floor(cam.y) === py || Math.floor(cam.y - 1) === py)) return;
-  world.setBlockWorld(px, py, pz, selectedBlock);
+  if (!world.setBlockWorld(px, py, pz, held.id)) return;
+  held.count -= 1;
+  if (held.count <= 0) slots[selectedHotbar] = null;
+  renderSlots();
 }
 
 // ---------- 카메라 컨트롤: 데스크탑 포인터락 + WASD 자유비행 ----------
@@ -559,27 +771,21 @@ const keys = new Set();
 let yaw = 0, pitch = -0.35;
 const MOVE_SPEED = 18;
 
-const hotbarHint = document.getElementById('hotbar-hint');
-function refreshHotbarHint() {
-  hotbarHint.textContent = PLACEABLE_ORDER.map((b, i) =>
-    (b === selectedBlock ? `[${i + 1}:${BLOCK_NAME_KO[b]}]` : `${i + 1}:${BLOCK_NAME_KO[b]}`)
-  ).join('  ');
-}
-refreshHotbarHint();
-
 document.addEventListener('keydown', (e) => {
   keys.add(e.code);
   const digit = parseInt(e.key, 10);
-  if (digit >= 1 && digit <= PLACEABLE_ORDER.length) {
-    selectedBlock = PLACEABLE_ORDER[digit - 1];
-    refreshHotbarHint();
+  if (digit >= 1 && digit <= HOTBAR_SIZE) {
+    selectedHotbar = digit - 1;
+    renderSlots();
   }
+  if (e.code === 'KeyE') setInventoryOpen(!inventoryOpen);
+  if (e.code === 'Escape' && inventoryOpen) setInventoryOpen(false);
 });
 document.addEventListener('keyup', (e) => keys.delete(e.code));
 
-// 채굴/설치 입력 (데스크탑 마우스, 포인터락 상태에서만 반응)
+// 채굴/설치 입력 (데스크탑 마우스, 포인터락 상태 + 인벤토리 닫혀있을 때만 반응)
 canvas.addEventListener('mousedown', (e) => {
-  if (document.pointerLockElement !== canvas) return;
+  if (document.pointerLockElement !== canvas || inventoryOpen) return;
   if (e.button === 0) { isMining = true; miningProgress = 0; }
   else if (e.button === 2) { tryPlace(); }
 });
@@ -606,10 +812,10 @@ radiusSlider.addEventListener('input', (e) => {
   world.setRadius(r);
 });
 document.addEventListener('pointerlockchange', () => {
-  overlay.classList.toggle('hidden', document.pointerLockElement === canvas);
+  overlay.classList.toggle('hidden', document.pointerLockElement === canvas || inventoryOpen);
 });
 document.addEventListener('mousemove', (e) => {
-  if (document.pointerLockElement !== canvas) return;
+  if (document.pointerLockElement !== canvas || inventoryOpen) return;
   const sensitivity = 0.0022;
   yaw -= e.movementX * sensitivity;
   pitch -= e.movementY * sensitivity;
@@ -672,15 +878,16 @@ function animate() {
   world.update(camera.position.x, camera.position.z);
   world.processQueue();
 
-  updateTarget();
+  if (!inventoryOpen) updateTarget();
   const targetKey = currentTarget ? `${currentTarget.x},${currentTarget.y},${currentTarget.z}` : null;
   if (targetKey !== lastTargetKey) { miningProgress = 0; lastTargetKey = targetKey; }
-  if (isMining && currentTarget) {
+  if (isMining && currentTarget && !inventoryOpen) {
     const blockId = world.getBlockWorld(currentTarget.x, currentTarget.y, currentTarget.z);
     const hardness = BLOCK_HARDNESS[blockId] ?? 0;
     miningProgress += dt;
     if (miningProgress >= hardness) {
       world.setBlockWorld(currentTarget.x, currentTarget.y, currentTarget.z, BLOCK.AIR);
+      addItem(blockId, 1); // 캐낸 블록을 인벤토리에 적재
       miningProgress = 0;
       isMining = false; // 한 번 채굴하면 다시 눌러야 다음 블록 채굴 (연속 채굴 방지)
     }
