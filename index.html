@@ -46,6 +46,17 @@
     position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
     display: flex; gap: 4px; z-index: 10;
   }
+  #vitals {
+    position: fixed; bottom: 58px; left: 50%; transform: translateX(-50%);
+    display: flex; flex-direction: column; gap: 3px; z-index: 10; width: 200px;
+  }
+  .vital-bar {
+    height: 8px; border-radius: 4px; border: 1px solid rgba(0,0,0,0.4);
+    background: rgba(0,0,0,0.35); overflow: hidden;
+  }
+  .vital-fill { height: 100%; width: 100%; transition: width 0.15s linear; }
+  #health-fill { background: #d64545; }
+  #hunger-fill { background: #c58a3d; }
 
   #inventory-panel {
     position: fixed; inset: 0; background: rgba(10,14,20,0.85); z-index: 90;
@@ -86,6 +97,10 @@
 <div id="hud"></div>
 <div id="crosshair"></div>
 <div id="mine-progress"><div id="mine-progress-fill"></div></div>
+<div id="vitals">
+  <div class="vital-bar"><div id="health-fill" class="vital-fill"></div></div>
+  <div class="vital-bar"><div id="hunger-fill" class="vital-fill"></div></div>
+</div>
 <div id="hotbar"></div>
 <div id="drag-ghost"></div>
 <div id="inventory-panel" class="hidden">
@@ -101,8 +116,8 @@
 <div id="overlay">
   <h1>BlockAdv</h1>
   <p id="overlay-msg">클릭(또는 탭)해서 시작 &mdash; WASD 이동, 마우스로 시점 회전, Space/Shift로 위아래 이동</p>
-  <p>좌클릭: 채굴 (홀드) / 우클릭: 설치(선택한 핫바 칸) / 숫자키 1~9: 핫바 선택 / E: 인벤토리</p>
-  <p style="opacity:0.5; font-size:12px;">5단계 검증 빌드: 크래프팅 시스템. 인벤토리 안 3x3 그리드에 재료를 놓으면 결과 슬롯에 미리보기가 뜨고, 클릭하면 완성됩니다. 인벤토리 드래그는 7단계 전까지 데스크탑 마우스로만 동작합니다.</p>
+  <p>좌클릭: 채굴 (홀드) / 우클릭: 설치 또는 (음식이면) 섭취 / 숫자키 1~9: 핫바 선택 / E: 인벤토리</p>
+  <p style="opacity:0.5; font-size:12px;">6단계 검증 빌드: 생존 지표(체력/배고픔). 화면 하단 막대 = 위 체력(빨강)/아래 배고픔(주황). 나뭇잎을 캐면 가끔 사과가 나옵니다. 배고픔이 0이 되면 체력이 서서히 줄고, 0이 되면 사망 후 인벤토리가 초기화된 채 리스폰합니다.</p>
   <div id="render-distance">
     <label for="render-distance-slider">렌더 거리 (반경 <span id="render-distance-value">4</span>청크)</label>
     <input type="range" id="render-distance-slider" min="1" max="8" step="1" value="4">
@@ -119,17 +134,14 @@
 </script>
 <script>
 'use strict';
-/* ===================== BlockAdv - Step 5: Crafting System =====================
- * 인벤토리 창 안에 3x3 제작 그리드 + 결과 슬롯을 추가. 그리드에 재료를 놓으면
- * shapeless(위치 무관, 개수만 확인) 방식으로 레시피를 매칭해 결과 슬롯에 미리보기를
- * 띄우고, 결과 슬롯을 집으면 그리드 재료를 소모하고 완성품을 커서에 올려준다.
- * 현재 블록 7종만으로는 의미있는 재료 조합이 부족해서, 통나무→판자 체인을 확장하는
- * 막대기/작업대 아이템을 새로 추가했다(막대기는 설치 불가능한 순수 아이템).
- * 채굴한 블록은 인벤토리(핫바 9칸 + 보관함 27칸)에 스택으로 쌓인다. 설치는 선택된
- * 핫바 칸의 아이템을 소모한다. 인벤토리 창은 E로 열고 닫으며, 드래그앤드롭으로
- * 슬롯 간 아이템을 옮길 수 있다(데스크탑 마우스 전용, 터치는 7단계에서).
- * 아키텍처 원칙: 청크당 메시 1개(face culling 병합), 텍스처 아틀라스 1장,
- * 동적 라이트 없음(방향광+환경광만), 정점은 Uint8Array 블록 ID.
+/* ===================== BlockAdv - Step 6: Survival Stats (Health/Hunger) =====================
+ * 배고픔은 시간이 지나면 서서히 줄고, 0이 되면 체력이 서서히 깎인다. 사과(나뭇잎 채굴 시
+ * 확률적으로 드랍)를 우클릭으로 먹으면 배고픔이 회복된다. 체력 0 도달 시 사망 처리:
+ * 인벤토리 초기화(결정된 정책) 후 스폰 지점에서 리스폰한다.
+ *
+ * 누적 기능: 청크 동적 로딩, 레이캐스팅 채굴/설치(+플레이어-블록 충돌), 인벤토리/핫바,
+ * 3x3 셰이프리스 크래프팅. 아키텍처 원칙: 청크당 메시 1개(face culling 병합),
+ * 텍스처 아틀라스 1장, 동적 라이트 없음(방향광+환경광만), 정점은 Uint8Array 블록 ID.
  * ======================================================================================= */
 
 // ---------- 시드 기반 노이즈 (Value Noise + fBm) ----------
@@ -191,13 +203,13 @@ function lerp(a, b, t) { return a + (b - a) * t; }
 // ITEM_ICON_TILE에만 등록되어 아이콘만 그려진다.
 const BLOCK = {
   AIR: 0, GRASS: 1, DIRT: 2, STONE: 3, SAND: 4,
-  LOG: 5, PLANKS: 6, LEAVES: 7, STICK: 8, CRAFTING_TABLE: 9,
+  LOG: 5, PLANKS: 6, LEAVES: 7, STICK: 8, CRAFTING_TABLE: 9, APPLE: 10,
 };
-const ATLAS_COLS = 4, ATLAS_ROWS = 3, TILE_PX = 16;
+const ATLAS_COLS = 5, ATLAS_ROWS = 3, TILE_PX = 16;
 const TILE = {
   GRASS_TOP: 0, GRASS_SIDE: 1, DIRT: 2, STONE: 3,
   SAND: 4, LOG_TOP: 5, LOG_SIDE: 6, PLANKS: 7,
-  LEAVES: 8, CRAFT_TOP: 9, CRAFT_SIDE: 10, STICK_ICON: 11,
+  LEAVES: 8, CRAFT_TOP: 9, CRAFT_SIDE: 10, STICK_ICON: 11, APPLE_ICON: 12,
 };
 // 블록별 [top, bottom, side] 타일 인덱스 (설치 가능한 블록만 등록)
 const BLOCK_TILES = {
@@ -214,7 +226,11 @@ const BLOCK_TILES = {
 const ITEM_ICON_TILE = {
   ...Object.fromEntries(Object.entries(BLOCK_TILES).map(([id, t]) => [id, t[0]])),
   [BLOCK.STICK]: TILE.STICK_ICON,
+  [BLOCK.APPLE]: TILE.APPLE_ICON,
 };
+// 배고픔을 채워주는 음식 아이템과 회복량
+const FOOD_VALUE = { [BLOCK.APPLE]: 20 };
+const LEAVES_APPLE_DROP_CHANCE = 0.15; // 나뭇잎 채굴 시 사과가 추가로 나올 확률
 // 블록별 채굴 소요 시간(초). 0 = 즉시 채굴.
 const BLOCK_HARDNESS = {
   [BLOCK.GRASS]: 0, [BLOCK.DIRT]: 0, [BLOCK.SAND]: 0, [BLOCK.LEAVES]: 0,
@@ -224,7 +240,7 @@ const BLOCK_HARDNESS = {
 const BLOCK_NAME_KO = {
   [BLOCK.GRASS]: '잔디', [BLOCK.DIRT]: '흙', [BLOCK.STONE]: '돌', [BLOCK.SAND]: '모래',
   [BLOCK.LOG]: '통나무', [BLOCK.PLANKS]: '판자', [BLOCK.LEAVES]: '나뭇잎',
-  [BLOCK.STICK]: '막대기', [BLOCK.CRAFTING_TABLE]: '작업대',
+  [BLOCK.STICK]: '막대기', [BLOCK.CRAFTING_TABLE]: '작업대', [BLOCK.APPLE]: '사과',
 };
 
 // ---------- 절차적 픽셀아트풍 텍스처 아틀라스 생성 ----------
@@ -299,6 +315,21 @@ function makeAtlasTexture() {
       px(cx, cy, i, i, shade('#8a6238', amt));
       px(cx, cy, i, i + 1, shade('#8a6238', amt - 10));
     }
+  }
+  // 사과도 인벤토리 아이콘 전용: 배경은 투명하게 두고 빨간 원 + 꼭지만 그린다.
+  {
+    const cx = TILE.APPLE_ICON % ATLAS_COLS, cy = Math.floor(TILE.APPLE_ICON / ATLAS_COLS);
+    const centerX = 7.5, centerY = 9, radius = 5.5;
+    for (let y = 0; y < TILE_PX; y++) {
+      for (let x = 0; x < TILE_PX; x++) {
+        const d = Math.hypot(x - centerX, y - centerY);
+        if (d <= radius) {
+          const amt = Math.floor((rand() - 0.5) * 20) + (d > radius - 1.2 ? -20 : 0);
+          px(cx, cy, x, y, shade('#c53030', amt));
+        }
+      }
+    }
+    for (let y = 2; y < 5; y++) px(cx, cy, 7, y, shade('#6e5232', -10));
   }
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -898,6 +929,8 @@ function tryPlace() {
 
 // ---------- 카메라 컨트롤: 데스크탑 포인터락 + WASD 자유비행 ----------
 const overlay = document.getElementById('overlay');
+const overlayMsgEl = document.getElementById('overlay-msg');
+const DEFAULT_OVERLAY_MSG = overlayMsgEl.textContent;
 const keys = new Set();
 let yaw = 0, pitch = -0.35;
 const MOVE_SPEED = 18;
@@ -950,11 +983,11 @@ document.addEventListener('keydown', (e) => {
 });
 document.addEventListener('keyup', (e) => keys.delete(e.code));
 
-// 채굴/설치 입력 (데스크탑 마우스, 포인터락 상태 + 인벤토리 닫혀있을 때만 반응)
+// 채굴/설치/섭취 입력 (데스크탑 마우스, 포인터락 상태 + 인벤토리 닫혀있을 때만 반응)
 canvas.addEventListener('mousedown', (e) => {
   if (document.pointerLockElement !== canvas || inventoryOpen) return;
   if (e.button === 0) { isMining = true; miningProgress = 0; }
-  else if (e.button === 2) { tryPlace(); }
+  else if (e.button === 2) { if (!tryEat()) tryPlace(); } // 들고 있는 게 음식이면 먹고, 아니면 설치 시도
 });
 document.addEventListener('mouseup', (e) => {
   if (e.button === 0) { isMining = false; miningProgress = 0; }
@@ -965,6 +998,7 @@ function requestLock() {
   if (canvas.requestPointerLock) canvas.requestPointerLock();
 }
 overlay.addEventListener('click', () => {
+  if (isDead) respawn();
   requestLock();
 });
 
@@ -1010,6 +1044,62 @@ canvas.addEventListener('touchend', (e) => {
   for (const t of e.changedTouches) if (t.identifier === touchId) touchId = null;
 }, { passive: true });
 
+// ---------- 생존 지표: 체력 / 배고픔 ----------
+const MAX_HEALTH = 100, MAX_HUNGER = 100;
+const HUNGER_DECAY_PER_SEC = MAX_HUNGER / 240; // 배고픔 0까지 약 4분
+const STARVE_DAMAGE_PER_SEC = MAX_HEALTH / 60; // 배고픔 0 상태로 방치하면 약 1분 뒤 사망
+const SPAWN_POS = { x: CHUNK_X / 2, y: 50, z: CHUNK_Z * 1.5 };
+let health = MAX_HEALTH, hunger = MAX_HUNGER;
+let isDead = false;
+
+const healthFillEl = document.getElementById('health-fill');
+const hungerFillEl = document.getElementById('hunger-fill');
+function renderVitals() {
+  healthFillEl.style.width = `${Math.max(0, health / MAX_HEALTH * 100)}%`;
+  hungerFillEl.style.width = `${Math.max(0, hunger / MAX_HUNGER * 100)}%`;
+}
+renderVitals();
+
+function updateVitals(dt) {
+  if (isDead) return;
+  hunger = Math.max(0, hunger - HUNGER_DECAY_PER_SEC * dt);
+  if (hunger <= 0) health = Math.max(0, health - STARVE_DAMAGE_PER_SEC * dt);
+  if (health <= 0) die();
+  renderVitals();
+}
+
+// 선택한 핫바 칸이 음식이면 우클릭으로 먹는다(배고픔 회복 + 1개 소모).
+function tryEat() {
+  const held = slots[selectedHotbar];
+  if (!held || !FOOD_VALUE[held.id]) return false;
+  if (hunger >= MAX_HUNGER) return true; // 이미 배부르면 소모하지 않음
+  hunger = Math.min(MAX_HUNGER, hunger + FOOD_VALUE[held.id]);
+  held.count -= 1;
+  if (held.count <= 0) slots[selectedHotbar] = null;
+  renderSlots();
+  renderVitals();
+  return true;
+}
+
+function die() {
+  isDead = true;
+  slots.fill(null); // 결정된 사망 페널티: 인벤토리 초기화(정통 마인크래프트 방식)
+  if (inventoryOpen) setInventoryOpen(false);
+  if (document.pointerLockElement === canvas) document.exitPointerLock();
+  overlay.classList.remove('hidden');
+  overlayMsgEl.textContent = '사망했습니다 - 클릭해서 리스폰';
+  renderSlots();
+}
+
+function respawn() {
+  isDead = false;
+  health = MAX_HEALTH; hunger = MAX_HUNGER;
+  camera.position.set(SPAWN_POS.x, SPAWN_POS.y, SPAWN_POS.z);
+  yaw = 0; pitch = -0.35;
+  overlayMsgEl.textContent = DEFAULT_OVERLAY_MSG;
+  renderVitals();
+}
+
 const hud = document.getElementById('hud');
 const mineProgressEl = document.getElementById('mine-progress');
 const mineProgressFill = document.getElementById('mine-progress-fill');
@@ -1037,24 +1127,26 @@ function animate() {
   if (keys.has('KeyA')) move.sub(right);
   if (keys.has('Space')) move.y += 1;
   if (keys.has('ShiftLeft') || keys.has('ShiftRight')) move.y -= 1;
-  if (move.lengthSq() > 0) {
+  if (move.lengthSq() > 0 && !isDead) {
     move.normalize().multiplyScalar(MOVE_SPEED * dt);
     moveWithCollision(move.x, move.y, move.z);
   }
 
   world.update(camera.position.x, camera.position.z);
   world.processQueue();
+  updateVitals(dt);
 
-  if (!inventoryOpen) updateTarget();
+  if (!inventoryOpen && !isDead) updateTarget(); else { currentTarget = null; highlightBox.visible = false; }
   const targetKey = currentTarget ? `${currentTarget.x},${currentTarget.y},${currentTarget.z}` : null;
   if (targetKey !== lastTargetKey) { miningProgress = 0; lastTargetKey = targetKey; }
-  if (isMining && currentTarget && !inventoryOpen) {
+  if (isMining && currentTarget && !inventoryOpen && !isDead) {
     const blockId = world.getBlockWorld(currentTarget.x, currentTarget.y, currentTarget.z);
     const hardness = BLOCK_HARDNESS[blockId] ?? 0;
     miningProgress += dt;
     if (miningProgress >= hardness) {
       world.setBlockWorld(currentTarget.x, currentTarget.y, currentTarget.z, BLOCK.AIR);
       addItem(blockId, 1); // 캐낸 블록을 인벤토리에 적재
+      if (blockId === BLOCK.LEAVES && Math.random() < LEAVES_APPLE_DROP_CHANCE) addItem(BLOCK.APPLE, 1);
       miningProgress = 0;
       isMining = false; // 한 번 채굴하면 다시 눌러야 다음 블록 채굴 (연속 채굴 방지)
     }
