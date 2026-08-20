@@ -20,6 +20,17 @@
     margin: -3px 0 0 -3px; border-radius: 50%; background: rgba(255,255,255,0.8);
     box-shadow: 0 0 2px #000; pointer-events: none; z-index: 10;
   }
+  #mine-progress {
+    position: fixed; top: calc(50% + 14px); left: 50%; width: 40px; height: 5px;
+    margin-left: -20px; border: 1px solid rgba(255,255,255,0.7); border-radius: 3px;
+    overflow: hidden; pointer-events: none; z-index: 10; opacity: 0;
+  }
+  #mine-progress-fill { height: 100%; width: 0%; background: #fff; }
+  #hotbar-hint {
+    position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
+    color: #fff; font-size: 12px; text-shadow: 0 0 3px #000, 0 0 3px #000;
+    pointer-events: none; z-index: 10; user-select: none; white-space: nowrap;
+  }
   #overlay {
     position: fixed; inset: 0; background: rgba(10,14,20,0.92); color: #fff;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -37,10 +48,13 @@
 <body>
 <div id="hud"></div>
 <div id="crosshair"></div>
+<div id="mine-progress"><div id="mine-progress-fill"></div></div>
+<div id="hotbar-hint"></div>
 <div id="overlay">
   <h1>BlockAdv</h1>
   <p id="overlay-msg">클릭(또는 탭)해서 시작 &mdash; WASD 이동, 마우스로 시점 회전, Space/Shift로 위아래 이동</p>
-  <p style="opacity:0.5; font-size:12px;">2단계 검증 빌드: 청크 동적 로딩/언로딩 + 무한 지형</p>
+  <p>좌클릭: 채굴 (홀드) / 우클릭: 설치 / 숫자키 1~7: 설치할 블록 선택</p>
+  <p style="opacity:0.5; font-size:12px;">3단계 검증 빌드: 블록 채굴/설치 (레이캐스팅). 터치 채굴/설치는 7단계에서 붙일 예정 &mdash; 지금은 데스크탑 마우스로만 동작합니다.</p>
   <div id="render-distance">
     <label for="render-distance-slider">렌더 거리 (반경 <span id="render-distance-value">4</span>청크)</label>
     <input type="range" id="render-distance-slider" min="1" max="8" step="1" value="4">
@@ -134,6 +148,16 @@ const BLOCK_TILES = {
   [BLOCK.LOG]: [TILE.LOG_TOP, TILE.LOG_TOP, TILE.LOG_SIDE],
   [BLOCK.PLANKS]: [TILE.PLANKS, TILE.PLANKS, TILE.PLANKS],
   [BLOCK.LEAVES]: [TILE.LEAVES, TILE.LEAVES, TILE.LEAVES],
+};
+// 블록별 채굴 소요 시간(초). 0 = 즉시 채굴.
+const BLOCK_HARDNESS = {
+  [BLOCK.GRASS]: 0, [BLOCK.DIRT]: 0, [BLOCK.SAND]: 0, [BLOCK.LEAVES]: 0,
+  [BLOCK.LOG]: 0.3, [BLOCK.PLANKS]: 0.3,
+  [BLOCK.STONE]: 0.6,
+};
+const BLOCK_NAME_KO = {
+  [BLOCK.GRASS]: '잔디', [BLOCK.DIRT]: '흙', [BLOCK.STONE]: '돌', [BLOCK.SAND]: '모래',
+  [BLOCK.LOG]: '통나무', [BLOCK.PLANKS]: '판자', [BLOCK.LEAVES]: '나뭇잎',
 };
 
 // ---------- 절차적 픽셀아트풍 텍스처 아틀라스 생성 ----------
@@ -312,6 +336,38 @@ class Chunk {
   }
 }
 
+// ---------- 블록 상호작용용 복셀 레이캐스팅 (Amanatides & Woo DDA) ----------
+// 병합된 청크 지오메트리를 삼각형 단위로 교차 검사하는 대신, 격자를 따라 한 칸씩
+// 전진하며 첫 번째로 막힌 복셀과 그 진입면을 정확히 찾는다.
+function raycastVoxels(ox, oy, oz, dx, dy, dz, maxDist, isSolid) {
+  let x = Math.floor(ox), y = Math.floor(oy), z = Math.floor(oz);
+  const stepX = dx > 0 ? 1 : dx < 0 ? -1 : 0;
+  const stepY = dy > 0 ? 1 : dy < 0 ? -1 : 0;
+  const stepZ = dz > 0 ? 1 : dz < 0 ? -1 : 0;
+  const tDeltaX = dx !== 0 ? Math.abs(1 / dx) : Infinity;
+  const tDeltaY = dy !== 0 ? Math.abs(1 / dy) : Infinity;
+  const tDeltaZ = dz !== 0 ? Math.abs(1 / dz) : Infinity;
+  const frac = (n) => n - Math.floor(n);
+  let tMaxX = dx > 0 ? (1 - frac(ox)) * tDeltaX : dx < 0 ? frac(ox) * tDeltaX : Infinity;
+  let tMaxY = dy > 0 ? (1 - frac(oy)) * tDeltaY : dy < 0 ? frac(oy) * tDeltaY : Infinity;
+  let tMaxZ = dz > 0 ? (1 - frac(oz)) * tDeltaZ : dz < 0 ? frac(oz) * tDeltaZ : Infinity;
+
+  let lastAxis = null, t = 0;
+  while (t <= maxDist) {
+    if (isSolid(x, y, z)) {
+      let face = [0, 0, 0], px = x, py = y, pz = z;
+      if (lastAxis === 'x') { face = [-stepX, 0, 0]; px = x - stepX; }
+      else if (lastAxis === 'y') { face = [0, -stepY, 0]; py = y - stepY; }
+      else if (lastAxis === 'z') { face = [0, 0, -stepZ]; pz = z - stepZ; }
+      return { hit: true, x, y, z, face, place: [px, py, pz] };
+    }
+    if (tMaxX < tMaxY && tMaxX < tMaxZ) { x += stepX; t = tMaxX; tMaxX += tDeltaX; lastAxis = 'x'; }
+    else if (tMaxY < tMaxZ) { y += stepY; t = tMaxY; tMaxY += tDeltaY; lastAxis = 'y'; }
+    else { z += stepZ; t = tMaxZ; tMaxZ += tDeltaZ; lastAxis = 'z'; }
+  }
+  return { hit: false };
+}
+
 // ---------- 월드 (플레이어 중심 반경 N청크 동적 로딩/언로딩) ----------
 class DynamicWorld {
   constructor(scene, atlasTexture, seed, radiusInChunks) {
@@ -384,10 +440,38 @@ class DynamicWorld {
     if (this.meshQueue.length === 0) return;
     const k = this.meshQueue.shift();
     this.queuedKeys.delete(k);
-    const chunk = this.chunks.get(k);
-    if (!chunk) return; // 대기 중 이미 범위 밖으로 밀려나 제거된 경우
+    if (!this.chunks.has(k)) return; // 대기 중 이미 범위 밖으로 밀려나 제거된 경우
+    this._remesh(k);
+  }
+
+  _remesh(key) {
+    const chunk = this.chunks.get(key);
+    if (!chunk) return;
+    if (chunk.mesh) { this.scene.remove(chunk.mesh); chunk.dispose(); }
     const mesh = chunk.buildMesh(this.atlasTexture, (wx, y, wz) => this.getBlockWorld(wx, y, wz));
     this.scene.add(mesh);
+  }
+
+  // 채굴/설치: 블록 하나를 바꾸고, 영향받는 청크(자신 + 경계에 걸쳐 있으면 이웃)를 즉시 다시 메싱
+  setBlockWorld(wx, y, wz, blockId) {
+    const cx = Math.floor(wx / CHUNK_X), cz = Math.floor(wz / CHUNK_Z);
+    const key = this.key(cx, cz);
+    const chunk = this.chunks.get(key);
+    if (!chunk) return false;
+    const lx = ((wx % CHUNK_X) + CHUNK_X) % CHUNK_X;
+    const lz = ((wz % CHUNK_Z) + CHUNK_Z) % CHUNK_Z;
+    if (y < 0 || y >= CHUNK_Y) return false;
+    chunk.set(lx, y, lz, blockId);
+    this._remesh(key);
+    if (lx === 0) this._remeshIfLoaded(cx - 1, cz);
+    if (lx === CHUNK_X - 1) this._remeshIfLoaded(cx + 1, cz);
+    if (lz === 0) this._remeshIfLoaded(cx, cz - 1);
+    if (lz === CHUNK_Z - 1) this._remeshIfLoaded(cx, cz + 1);
+    return true;
+  }
+  _remeshIfLoaded(cx, cz) {
+    const key = this.key(cx, cz);
+    if (this.chunks.has(key)) this._remesh(key);
   }
 
   get chunkCount() { return this.chunks.size; }
@@ -429,14 +513,80 @@ const DEFAULT_RENDER_RADIUS = 4;
 const atlasTexture = makeAtlasTexture();
 const world = new DynamicWorld(scene, atlasTexture, 20260820, DEFAULT_RENDER_RADIUS);
 
+// ---------- 블록 채굴/설치 ----------
+const REACH = 6; // 채굴/설치 가능 거리(블록)
+const highlightBox = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(1.002, 1.002, 1.002)),
+  new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.4 })
+);
+highlightBox.visible = false;
+scene.add(highlightBox);
+
+// 인벤토리는 4단계에서 붙임. 지금은 숫자키 1~7로 설치할 블록을 고른다(테스트용).
+let selectedBlock = BLOCK.STONE;
+const PLACEABLE_ORDER = [BLOCK.GRASS, BLOCK.DIRT, BLOCK.STONE, BLOCK.SAND, BLOCK.LOG, BLOCK.PLANKS, BLOCK.LEAVES];
+
+let currentTarget = null; // raycastVoxels 결과
+let miningProgress = 0;   // 0~1
+let isMining = false;
+
+function updateTarget() {
+  const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+  const o = camera.position;
+  const result = raycastVoxels(o.x, o.y, o.z, dir.x, dir.y, dir.z, REACH,
+    (x, y, z) => world.getBlockWorld(x, y, z) !== BLOCK.AIR);
+  currentTarget = result.hit ? result : null;
+  if (currentTarget) {
+    highlightBox.position.set(currentTarget.x + 0.5, currentTarget.y + 0.5, currentTarget.z + 0.5);
+    highlightBox.visible = true;
+  } else {
+    highlightBox.visible = false;
+  }
+}
+
+function tryPlace() {
+  if (!currentTarget) return;
+  const [px, py, pz] = currentTarget.place;
+  // 플레이어 발밑/머리 위치와 겹치는 자리에는 설치하지 않음(카메라 위치 기준 대략 판정)
+  const cam = camera.position;
+  if (Math.floor(cam.x) === px && Math.floor(cam.z) === pz && (Math.floor(cam.y) === py || Math.floor(cam.y - 1) === py)) return;
+  world.setBlockWorld(px, py, pz, selectedBlock);
+}
+
 // ---------- 카메라 컨트롤: 데스크탑 포인터락 + WASD 자유비행 ----------
 const overlay = document.getElementById('overlay');
 const keys = new Set();
 let yaw = 0, pitch = -0.35;
 const MOVE_SPEED = 18;
 
-document.addEventListener('keydown', (e) => keys.add(e.code));
+const hotbarHint = document.getElementById('hotbar-hint');
+function refreshHotbarHint() {
+  hotbarHint.textContent = PLACEABLE_ORDER.map((b, i) =>
+    (b === selectedBlock ? `[${i + 1}:${BLOCK_NAME_KO[b]}]` : `${i + 1}:${BLOCK_NAME_KO[b]}`)
+  ).join('  ');
+}
+refreshHotbarHint();
+
+document.addEventListener('keydown', (e) => {
+  keys.add(e.code);
+  const digit = parseInt(e.key, 10);
+  if (digit >= 1 && digit <= PLACEABLE_ORDER.length) {
+    selectedBlock = PLACEABLE_ORDER[digit - 1];
+    refreshHotbarHint();
+  }
+});
 document.addEventListener('keyup', (e) => keys.delete(e.code));
+
+// 채굴/설치 입력 (데스크탑 마우스, 포인터락 상태에서만 반응)
+canvas.addEventListener('mousedown', (e) => {
+  if (document.pointerLockElement !== canvas) return;
+  if (e.button === 0) { isMining = true; miningProgress = 0; }
+  else if (e.button === 2) { tryPlace(); }
+});
+document.addEventListener('mouseup', (e) => {
+  if (e.button === 0) { isMining = false; miningProgress = 0; }
+});
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 function requestLock() {
   if (canvas.requestPointerLock) canvas.requestPointerLock();
@@ -488,8 +638,11 @@ canvas.addEventListener('touchend', (e) => {
 }, { passive: true });
 
 const hud = document.getElementById('hud');
+const mineProgressEl = document.getElementById('mine-progress');
+const mineProgressFill = document.getElementById('mine-progress-fill');
 let lastTime = performance.now();
 let fpsSmoothed = 60;
+let lastTargetKey = null;
 
 function animate() {
   requestAnimationFrame(animate);
@@ -518,6 +671,24 @@ function animate() {
 
   world.update(camera.position.x, camera.position.z);
   world.processQueue();
+
+  updateTarget();
+  const targetKey = currentTarget ? `${currentTarget.x},${currentTarget.y},${currentTarget.z}` : null;
+  if (targetKey !== lastTargetKey) { miningProgress = 0; lastTargetKey = targetKey; }
+  if (isMining && currentTarget) {
+    const blockId = world.getBlockWorld(currentTarget.x, currentTarget.y, currentTarget.z);
+    const hardness = BLOCK_HARDNESS[blockId] ?? 0;
+    miningProgress += dt;
+    if (miningProgress >= hardness) {
+      world.setBlockWorld(currentTarget.x, currentTarget.y, currentTarget.z, BLOCK.AIR);
+      miningProgress = 0;
+      isMining = false; // 한 번 채굴하면 다시 눌러야 다음 블록 채굴 (연속 채굴 방지)
+    }
+    mineProgressEl.style.opacity = hardness > 0 ? '1' : '0';
+    mineProgressFill.style.width = `${Math.min(100, (miningProgress / Math.max(hardness, 0.0001)) * 100)}%`;
+  } else {
+    mineProgressEl.style.opacity = '0';
+  }
 
   hud.textContent =
     `FPS ${fpsSmoothed.toFixed(0)} | 청크 ${world.chunkCount}개 (대기 ${world.pendingCount}) | ` +
