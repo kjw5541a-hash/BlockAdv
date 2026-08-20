@@ -771,6 +771,42 @@ const keys = new Set();
 let yaw = 0, pitch = -0.35;
 const MOVE_SPEED = 18;
 
+// 플레이어(카메라) AABB 충돌 판정. 자유비행 자체는 유지하되(위아래 자유이동),
+// 블록 속으로 파고들지는 못하게 막는다 - 안 그러면 블록 안쪽(뒷면 컬링된 안쪽)이
+// 보여서 "블록이 안 보이다가 채굴하면 갑자기 통로가 생기는" 것처럼 보인다.
+const PLAYER_HALF_WIDTH = 0.3;
+const PLAYER_EYE_HEIGHT = 1.6;
+const PLAYER_HEIGHT = 1.8;
+const COLLISION_EPS = 0.001;
+
+function aabbCollides(px, py, pz) {
+  const minX = Math.floor(px - PLAYER_HALF_WIDTH + COLLISION_EPS);
+  const maxX = Math.floor(px + PLAYER_HALF_WIDTH - COLLISION_EPS);
+  const minZ = Math.floor(pz - PLAYER_HALF_WIDTH + COLLISION_EPS);
+  const maxZ = Math.floor(pz + PLAYER_HALF_WIDTH - COLLISION_EPS);
+  const minY = Math.floor(py - PLAYER_EYE_HEIGHT + COLLISION_EPS);
+  const maxY = Math.floor(py + (PLAYER_HEIGHT - PLAYER_EYE_HEIGHT) - COLLISION_EPS);
+  for (let x = minX; x <= maxX; x++) {
+    for (let y = minY; y <= maxY; y++) {
+      for (let z = minZ; z <= maxZ; z++) {
+        if (world.getBlockWorld(x, y, z) !== BLOCK.AIR) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// 축을 하나씩 따로 옮겨보고 막히면 그 축만 되돌린다 (완전한 스윕은 아니지만
+// 벽을 타고 미끄러지는 느낌은 충분히 남고 구현이 훨씬 단순함)
+function moveWithCollision(dx, dy, dz) {
+  camera.position.x += dx;
+  if (aabbCollides(camera.position.x, camera.position.y, camera.position.z)) camera.position.x -= dx;
+  camera.position.y += dy;
+  if (aabbCollides(camera.position.x, camera.position.y, camera.position.z)) camera.position.y -= dy;
+  camera.position.z += dz;
+  if (aabbCollides(camera.position.x, camera.position.y, camera.position.z)) camera.position.z -= dz;
+}
+
 document.addEventListener('keydown', (e) => {
   keys.add(e.code);
   const digit = parseInt(e.key, 10);
@@ -872,7 +908,7 @@ function animate() {
   if (keys.has('ShiftLeft') || keys.has('ShiftRight')) move.y -= 1;
   if (move.lengthSq() > 0) {
     move.normalize().multiplyScalar(MOVE_SPEED * dt);
-    camera.position.add(move);
+    moveWithCollision(move.x, move.y, move.z);
   }
 
   world.update(camera.position.x, camera.position.z);
