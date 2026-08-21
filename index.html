@@ -269,14 +269,18 @@ const BLOCK = {
   LOG: 5, PLANKS: 6, LEAVES: 7, STICK: 8, CRAFTING_TABLE: 9, APPLE: 10,
   COAL_ORE: 11, IRON_ORE: 12,
   WOOD_PICKAXE: 13, STONE_PICKAXE: 14, IRON_PICKAXE: 15,
+  WOOD_AXE: 16, STONE_AXE: 17, IRON_AXE: 18,
+  WOOD_SHOVEL: 19, STONE_SHOVEL: 20, IRON_SHOVEL: 21,
 };
-const ATLAS_COLS = 5, ATLAS_ROWS = 4, TILE_PX = 16;
+const ATLAS_COLS = 5, ATLAS_ROWS = 5, TILE_PX = 16;
 const TILE = {
   GRASS_TOP: 0, GRASS_SIDE: 1, DIRT: 2, STONE: 3,
   SAND: 4, LOG_TOP: 5, LOG_SIDE: 6, PLANKS: 7,
   LEAVES: 8, CRAFT_TOP: 9, CRAFT_SIDE: 10, STICK_ICON: 11, APPLE_ICON: 12,
   COAL_ORE: 13, IRON_ORE: 14,
   WOOD_PICKAXE_ICON: 15, STONE_PICKAXE_ICON: 16, IRON_PICKAXE_ICON: 17,
+  WOOD_AXE_ICON: 18, STONE_AXE_ICON: 19, IRON_AXE_ICON: 20,
+  WOOD_SHOVEL_ICON: 21, STONE_SHOVEL_ICON: 22, IRON_SHOVEL_ICON: 23,
 };
 // 블록별 [top, bottom, side] 타일 인덱스 (설치 가능한 블록만 등록)
 const BLOCK_TILES = {
@@ -299,21 +303,40 @@ const ITEM_ICON_TILE = {
   [BLOCK.WOOD_PICKAXE]: TILE.WOOD_PICKAXE_ICON,
   [BLOCK.STONE_PICKAXE]: TILE.STONE_PICKAXE_ICON,
   [BLOCK.IRON_PICKAXE]: TILE.IRON_PICKAXE_ICON,
+  [BLOCK.WOOD_AXE]: TILE.WOOD_AXE_ICON,
+  [BLOCK.STONE_AXE]: TILE.STONE_AXE_ICON,
+  [BLOCK.IRON_AXE]: TILE.IRON_AXE_ICON,
+  [BLOCK.WOOD_SHOVEL]: TILE.WOOD_SHOVEL_ICON,
+  [BLOCK.STONE_SHOVEL]: TILE.STONE_SHOVEL_ICON,
+  [BLOCK.IRON_SHOVEL]: TILE.IRON_SHOVEL_ICON,
 };
 // 배고픔을 채워주는 음식 아이템과 회복량
 const FOOD_VALUE = { [BLOCK.APPLE]: 20 };
 const LEAVES_APPLE_DROP_CHANCE = 0.15; // 나뭇잎 채굴 시 사과가 추가로 나올 확률
-// 블록별 채굴 소요 시간(초). 0 = 즉시 채굴. 곡괭이를 들고 있으면 PICKAXE_BLOCKS에 한해
-// TIER_SPEED_MULT만큼 더 빨라진다(도구 없이 캐던 기존 시간은 그대로 유지됨).
+// 블록별 채굴 소요 시간(초). 0 = 즉시 채굴. 알맞은 도구(CATEGORY_BLOCKS 참고)를 들고
+// 있으면 TIER_SPEED_MULT만큼 더 빨라진다. 잔디/흙/모래는 삽의 존재 의미를 위해 살짝
+// 지연(0.25초)을 줬다 - 맨손으로도 여전히 거의 즉시 캐지지만, 삽을 들면 더 빠르다.
 const BLOCK_HARDNESS = {
-  [BLOCK.GRASS]: 0, [BLOCK.DIRT]: 0, [BLOCK.SAND]: 0, [BLOCK.LEAVES]: 0,
+  [BLOCK.GRASS]: 0.25, [BLOCK.DIRT]: 0.25, [BLOCK.SAND]: 0.25, [BLOCK.LEAVES]: 0,
   [BLOCK.LOG]: 0.3, [BLOCK.PLANKS]: 0.3, [BLOCK.CRAFTING_TABLE]: 0.3,
   [BLOCK.STONE]: 0.6, [BLOCK.COAL_ORE]: 0.7, [BLOCK.IRON_ORE]: 0.9,
 };
-// 곡괭이로 캘 때 채굴속도가 빨라지는 블록(돌 계열). 도구 등급별 배속.
-const PICKAXE_BLOCKS = new Set([BLOCK.STONE, BLOCK.COAL_ORE, BLOCK.IRON_ORE]);
+// 도구별로 배속이 적용되는 블록 분류(곡괭이=돌 계열, 도끼=나무 계열, 삽=흙 계열).
+// 들고 있는 도구의 분류와 캐려는 블록의 분류가 일치할 때만 TIER_SPEED_MULT가 적용된다.
+const CATEGORY_BLOCKS = {
+  pickaxe: new Set([BLOCK.STONE, BLOCK.COAL_ORE, BLOCK.IRON_ORE]),
+  axe: new Set([BLOCK.LOG, BLOCK.PLANKS, BLOCK.CRAFTING_TABLE]),
+  shovel: new Set([BLOCK.GRASS, BLOCK.DIRT, BLOCK.SAND]),
+};
+const TOOL_CATEGORY = {
+  [BLOCK.WOOD_PICKAXE]: 'pickaxe', [BLOCK.STONE_PICKAXE]: 'pickaxe', [BLOCK.IRON_PICKAXE]: 'pickaxe',
+  [BLOCK.WOOD_AXE]: 'axe', [BLOCK.STONE_AXE]: 'axe', [BLOCK.IRON_AXE]: 'axe',
+  [BLOCK.WOOD_SHOVEL]: 'shovel', [BLOCK.STONE_SHOVEL]: 'shovel', [BLOCK.IRON_SHOVEL]: 'shovel',
+};
 const TOOL_TIER = {
   [BLOCK.WOOD_PICKAXE]: 1, [BLOCK.STONE_PICKAXE]: 2, [BLOCK.IRON_PICKAXE]: 3,
+  [BLOCK.WOOD_AXE]: 1, [BLOCK.STONE_AXE]: 2, [BLOCK.IRON_AXE]: 3,
+  [BLOCK.WOOD_SHOVEL]: 1, [BLOCK.STONE_SHOVEL]: 2, [BLOCK.IRON_SHOVEL]: 3,
 };
 const TIER_SPEED_MULT = { 0: 1, 1: 2, 2: 4, 3: 6 };
 const BLOCK_NAME_KO = {
@@ -322,6 +345,8 @@ const BLOCK_NAME_KO = {
   [BLOCK.STICK]: '막대기', [BLOCK.CRAFTING_TABLE]: '작업대', [BLOCK.APPLE]: '사과',
   [BLOCK.COAL_ORE]: '석탄 광석', [BLOCK.IRON_ORE]: '철 광석',
   [BLOCK.WOOD_PICKAXE]: '나무 곡괭이', [BLOCK.STONE_PICKAXE]: '돌 곡괭이', [BLOCK.IRON_PICKAXE]: '철 곡괭이',
+  [BLOCK.WOOD_AXE]: '나무 도끼', [BLOCK.STONE_AXE]: '돌 도끼', [BLOCK.IRON_AXE]: '철 도끼',
+  [BLOCK.WOOD_SHOVEL]: '나무 삽', [BLOCK.STONE_SHOVEL]: '돌 삽', [BLOCK.IRON_SHOVEL]: '철 삽',
 };
 
 // ---------- 절차적 픽셀아트풍 텍스처 아틀라스 생성 ----------
@@ -452,6 +477,53 @@ function makeAtlasTexture() {
     drawPickaxe(TILE.WOOD_PICKAXE_ICON, '#a9814f');
     drawPickaxe(TILE.STONE_PICKAXE_ICON, '#8a8a8f');
     drawPickaxe(TILE.IRON_PICKAXE_ICON, '#d8d8e2');
+  }
+  // 도끼 아이콘 3종: 손잡이는 곡괭이와 동일, 머리는 손잡이 한쪽에 붙은 쐐기 모양 도끼날.
+  {
+    const drawAxe = (tileIdx, headColor) => {
+      const cx = tileIdx % ATLAS_COLS, cy = Math.floor(tileIdx / ATLAS_COLS);
+      for (let i = 4; i < TILE_PX - 2; i++) {
+        const amt = Math.floor((rand() - 0.5) * 16);
+        px(cx, cy, i - 2, i, shade('#8a6238', amt));
+      }
+      const headPixels = [
+        [0, 2], [1, 2], [2, 2], [3, 2],
+        [0, 3], [1, 3], [2, 3], [3, 3], [4, 3],
+        [1, 4], [2, 4], [3, 4], [4, 4], [5, 4],
+        [2, 5], [3, 5], [4, 5],
+        [3, 6],
+      ];
+      for (const [x, y] of headPixels) {
+        const amt = Math.floor((rand() - 0.5) * 16);
+        px(cx, cy, x, y, shade(headColor, amt));
+      }
+    };
+    drawAxe(TILE.WOOD_AXE_ICON, '#a9814f');
+    drawAxe(TILE.STONE_AXE_ICON, '#8a8a8f');
+    drawAxe(TILE.IRON_AXE_ICON, '#d8d8e2');
+  }
+  // 삽 아이콘 3종: 손잡이 끝에 작고 납작한 삽날만 얹어서 도끼/곡괭이와 구분되게 함.
+  {
+    const drawShovel = (tileIdx, headColor) => {
+      const cx = tileIdx % ATLAS_COLS, cy = Math.floor(tileIdx / ATLAS_COLS);
+      for (let i = 4; i < TILE_PX - 2; i++) {
+        const amt = Math.floor((rand() - 0.5) * 16);
+        px(cx, cy, i - 2, i, shade('#8a6238', amt));
+      }
+      const headPixels = [
+        [1, 2], [2, 2],
+        [0, 3], [1, 3], [2, 3], [3, 3],
+        [0, 4], [1, 4], [2, 4], [3, 4],
+        [1, 5], [2, 5],
+      ];
+      for (const [x, y] of headPixels) {
+        const amt = Math.floor((rand() - 0.5) * 16);
+        px(cx, cy, x, y, shade(headColor, amt));
+      }
+    };
+    drawShovel(TILE.WOOD_SHOVEL_ICON, '#a9814f');
+    drawShovel(TILE.STONE_SHOVEL_ICON, '#8a8a8f');
+    drawShovel(TILE.IRON_SHOVEL_ICON, '#d8d8e2');
   }
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -997,11 +1069,22 @@ const RECIPES = [
   { ingredients: [{ id: BLOCK.LOG, count: 1 }], output: { id: BLOCK.PLANKS, count: 4 } },
   { ingredients: [{ id: BLOCK.PLANKS, count: 2 }], output: { id: BLOCK.STICK, count: 4 } },
   { ingredients: [{ id: BLOCK.PLANKS, count: 4 }], output: { id: BLOCK.CRAFTING_TABLE, count: 1 } },
-  // 도구/장비: 곡괭이 3종. 아직 제련(용광로) 시스템이 없어서 철 곡괭이는 철 광석 원석을
-  // 바로 사용한다(잉곳 정제 단계는 생략).
+  // 도구/장비: 재질별(나무/돌/철) 곡괭이·도끼·삽. 아직 제련(용광로) 시스템이 없어서
+  // 철 도구는 철 광석 원석을 바로 사용한다(잉곳 정제 단계는 생략).
+  // 같은 재질 안에서 도끼(재료3+막대3) -> 곡괭이(재료3+막대2) -> 삽(재료1+막대2) 순서로
+  // 배열해야 한다: 이 크래프팅은 shapeless라 그리드 위치가 아니라 개수만 보고 매칭하는데,
+  // 재료를 더 많이 쓰는 레시피(도끼)의 조건은 적게 쓰는 레시피(곡괭이/삽)의 조건도
+  // 함께 만족해버리므로, 먼저 등장하는 레시피가 우선 매칭된다. 재료 소모량이 큰 순서로
+  // 나열해야 도끼 재료를 들고 있을 때 곡괭이나 삽으로 잘못 제작되지 않는다.
+  { ingredients: [{ id: BLOCK.PLANKS, count: 3 }, { id: BLOCK.STICK, count: 3 }], output: { id: BLOCK.WOOD_AXE, count: 1 } },
   { ingredients: [{ id: BLOCK.PLANKS, count: 3 }, { id: BLOCK.STICK, count: 2 }], output: { id: BLOCK.WOOD_PICKAXE, count: 1 } },
+  { ingredients: [{ id: BLOCK.PLANKS, count: 1 }, { id: BLOCK.STICK, count: 2 }], output: { id: BLOCK.WOOD_SHOVEL, count: 1 } },
+  { ingredients: [{ id: BLOCK.STONE, count: 3 }, { id: BLOCK.STICK, count: 3 }], output: { id: BLOCK.STONE_AXE, count: 1 } },
   { ingredients: [{ id: BLOCK.STONE, count: 3 }, { id: BLOCK.STICK, count: 2 }], output: { id: BLOCK.STONE_PICKAXE, count: 1 } },
+  { ingredients: [{ id: BLOCK.STONE, count: 1 }, { id: BLOCK.STICK, count: 2 }], output: { id: BLOCK.STONE_SHOVEL, count: 1 } },
+  { ingredients: [{ id: BLOCK.IRON_ORE, count: 3 }, { id: BLOCK.STICK, count: 3 }], output: { id: BLOCK.IRON_AXE, count: 1 } },
   { ingredients: [{ id: BLOCK.IRON_ORE, count: 3 }, { id: BLOCK.STICK, count: 2 }], output: { id: BLOCK.IRON_PICKAXE, count: 1 } },
+  { ingredients: [{ id: BLOCK.IRON_ORE, count: 1 }, { id: BLOCK.STICK, count: 2 }], output: { id: BLOCK.IRON_SHOVEL, count: 1 } },
 ];
 // 제작 그리드(36~44)의 내용물을 보고 레시피 매칭 + 결과 슬롯 갱신. 그리드에 레시피와
 // 무관한 재료가 섞여 있으면(정확히 일치하지 않으면) 매칭 실패로 처리한다.
@@ -1688,7 +1771,8 @@ function animate() {
     const blockId = world.getBlockWorld(currentTarget.x, currentTarget.y, currentTarget.z);
     const heldTool = slots[selectedHotbar];
     const toolTier = heldTool ? (TOOL_TIER[heldTool.id] || 0) : 0;
-    const speedMult = PICKAXE_BLOCKS.has(blockId) ? (TIER_SPEED_MULT[toolTier] ?? 1) : 1;
+    const toolCategory = heldTool ? TOOL_CATEGORY[heldTool.id] : null;
+    const speedMult = (toolCategory && CATEGORY_BLOCKS[toolCategory].has(blockId)) ? (TIER_SPEED_MULT[toolTier] ?? 1) : 1;
     const hardness = (BLOCK_HARDNESS[blockId] ?? 0) / speedMult;
     miningProgress += dt;
     if (miningProgress >= hardness) {
