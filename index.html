@@ -155,7 +155,7 @@
   <p id="overlay-msg">클릭(또는 탭)해서 시작 &mdash; WASD 이동, 마우스로 시점 회전, Space/Shift로 위아래 이동</p>
   <p>데스크탑: 좌클릭 채굴(홀드) / 우클릭 설치·섭취 / 숫자키 1~9 핫바 / E 인벤토리</p>
   <p>모바일: 좌하단 조이스틱 이동 / 화면 드래그 시점 회전 / 화면 탭(홀드) 채굴 / 우측 버튼 설치·섭취·인벤토리</p>
-  <p style="opacity:0.5; font-size:12px;">7단계 검증 빌드: 모바일 터치 컨트롤.</p>
+  <p style="opacity:0.5; font-size:12px;">8단계 검증 빌드: 저장/불러오기. 5초마다 자동 저장되고, 새로고침하면 캐낸/설치한 블록·인벤토리·체력/배고픔·위치가 그대로 복원됩니다.</p>
   <div id="render-distance">
     <label for="render-distance-slider">렌더 거리 (반경 <span id="render-distance-value">4</span>청크)</label>
     <input type="range" id="render-distance-slider" min="1" max="8" step="1" value="4">
@@ -172,18 +172,18 @@
 </script>
 <script>
 'use strict';
-/* ===================== BlockAdv - Step 7: Mobile Touch Controls =====================
- * 터치 가능 기기(IS_TOUCH_DEVICE)에서만 가상 조이스틱(좌하단, 이동) + 우측 버튼(설치/섭취,
- * 인벤토리)을 보여준다. 나머지 화면 영역은 드래그하면 시점 회전, 제자리에서 탭&홀드하면
- * 화면 중앙 크로스헤어 기준으로 채굴(데스크탑 좌클릭 홀드와 완전히 같은 동작) - 문턱
- * 거리를 넘는 순간 채굴을 취소하고 시점 회전으로 전환해서 둘을 구분한다. 인벤토리 드래그
- * 앤드롭도 Pointer Events로 통일해서 마우스/터치 어느 쪽으로도 동작한다. 데스크탑의
- * 마우스+포인터락 입력 경로는 그대로 남겨두고 pointerType으로 완전히 분리했다.
+/* ===================== BlockAdv - Step 8: Save/Load (IndexedDB) =====================
+ * 지형은 저장하지 않고 시드로 매번 재생성한다 - 대신 플레이어가 바꾼 블록만 diff로
+ * IndexedDB에 저장했다가, 청크가 (재입장이든 새로고침이든) 다시 생성될 때 덮어씌운다.
+ * 이 diffs 맵은 같은 세션 안에서 청크가 로드/언로드를 반복할 때도 그대로 쓰이므로,
+ * 저장 기능과 무관하게 "청크를 나갔다 돌아왔더니 캔 블록이 원상복구되는" 문제도 같이
+ * 해결된다. 플레이어 좌표/시점, 체력/배고픔, 인벤토리, 렌더 거리도 같이 저장한다.
+ * 세이브 슬롯은 없음(기획 확정) - 5초마다 자동저장 + 탭을 벗어나거나 닫을 때 한 번 더.
  *
  * 누적 기능: 청크 동적 로딩, 레이캐스팅 채굴/설치(+플레이어-블록 충돌), 인벤토리/핫바,
- * 3x3 셰이프리스 크래프팅, 생존 지표(체력/배고픔, 사망/리스폰). 아키텍처 원칙: 청크당
- * 메시 1개(face culling 병합), 텍스처 아틀라스 1장, 동적 라이트 없음(방향광+환경광만),
- * 정점은 Uint8Array 블록 ID.
+ * 3x3 셰이프리스 크래프팅, 생존 지표(체력/배고픔, 사망/리스폰), 모바일 터치 컨트롤.
+ * 아키텍처 원칙: 청크당 메시 1개(face culling 병합), 텍스처 아틀라스 1장, 동적 라이트
+ * 없음(방향광+환경광만), 정점은 Uint8Array 블록 ID.
  * ======================================================================================= */
 
 // ---------- 시드 기반 노이즈 (Value Noise + fBm) ----------
@@ -582,6 +582,10 @@ class DynamicWorld {
     this.meshQueue = [];          // 메싱 대기열 (프레임당 1개씩 처리)
     this.queuedKeys = new Set();  // meshQueue 중복 방지
     this.radius = radiusInChunks;
+    // 지형 자체는 저장하지 않고 시드로 매번 재생성한다. 플레이어가 채굴/설치한 셀만
+    // "wx,y,wz" -> blockId로 기록해서 청크가 (재입장이든 저장 불러오기든) 다시 생성될 때마다
+    // 덮어씌운다. IndexedDB 저장은 이 diffs 맵을 그대로 직렬화한다.
+    this.diffs = new Map();
     this._centerCx = null;
     this._centerCz = null;
   }
@@ -621,6 +625,7 @@ class DynamicWorld {
       if (this.chunks.has(k)) continue;
       const [kcx, kcz] = k.split(',').map(Number);
       const chunk = new Chunk(kcx, kcz, this.noise);
+      this.applyDiffsToChunk(chunk);
       this.chunks.set(k, chunk);
       if (!this.queuedKeys.has(k)) {
         this.meshQueue.push(k);
@@ -666,6 +671,7 @@ class DynamicWorld {
     const lz = ((wz % CHUNK_Z) + CHUNK_Z) % CHUNK_Z;
     if (y < 0 || y >= CHUNK_Y) return false;
     chunk.set(lx, y, lz, blockId);
+    this.diffs.set(`${wx},${y},${wz}`, blockId);
     this._remesh(key);
     if (lx === 0) this._remeshIfLoaded(cx - 1, cz);
     if (lx === CHUNK_X - 1) this._remeshIfLoaded(cx + 1, cz);
@@ -676,6 +682,19 @@ class DynamicWorld {
   _remeshIfLoaded(cx, cz) {
     const key = this.key(cx, cz);
     if (this.chunks.has(key)) this._remesh(key);
+  }
+
+  // 로드된(또는 방금 생성된) 청크 하나에 diffs를 덮어씌운다. 지형 생성 직후 호출되어야 함.
+  applyDiffsToChunk(chunk) {
+    if (this.diffs.size === 0) return;
+    for (const [key, blockId] of this.diffs) {
+      const [wx, y, wz] = key.split(',').map(Number);
+      const cx = Math.floor(wx / CHUNK_X), cz = Math.floor(wz / CHUNK_Z);
+      if (cx !== chunk.cx || cz !== chunk.cz) continue;
+      const lx = ((wx % CHUNK_X) + CHUNK_X) % CHUNK_X;
+      const lz = ((wz % CHUNK_Z) + CHUNK_Z) % CHUNK_Z;
+      chunk.set(lx, y, lz, blockId);
+    }
   }
 
   get chunkCount() { return this.chunks.size; }
@@ -1261,6 +1280,99 @@ function respawn() {
   overlayMsgEl.textContent = DEFAULT_OVERLAY_MSG;
   renderVitals();
 }
+
+// ---------- 저장/불러오기 (IndexedDB) ----------
+// 지형은 시드로 재생성하므로 저장하지 않는다. 시드값 자체는 코드에 고정된 상수라(월드
+// 선택 UI가 없음) 따로 저장할 필요도 없다. 실제로 저장하는 건: 블록 diff, 플레이어
+// 좌표/시점, 체력/배고픔, 인벤토리, 렌더 거리 설정 - 단일 세이브(슬롯 없음, 기획 확정).
+const SAVE_DB_NAME = 'blockadv-save', SAVE_DB_VERSION = 1, SAVE_STORE = 'world', SAVE_KEY = 'save';
+
+function openSaveDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(SAVE_DB_NAME, SAVE_DB_VERSION);
+    req.onupgradeneeded = () => req.result.createObjectStore(SAVE_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function loadSave() {
+  try {
+    const db = await openSaveDB();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(SAVE_STORE, 'readonly');
+      const req = tx.objectStore(SAVE_STORE).get(SAVE_KEY);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (e) {
+    console.warn('저장된 게임을 불러오지 못했습니다:', e);
+    return null;
+  }
+}
+function buildSaveData() {
+  const diffs = [];
+  for (const [key, blockId] of world.diffs) {
+    const [wx, y, wz] = key.split(',').map(Number);
+    diffs.push([wx, y, wz, blockId]);
+  }
+  return {
+    version: 1,
+    diffs,
+    player: { x: camera.position.x, y: camera.position.y, z: camera.position.z, yaw, pitch },
+    health, hunger,
+    slots: slots.slice(),
+    renderRadius: world.radius,
+    savedAt: Date.now(),
+  };
+}
+async function writeSave() {
+  try {
+    const db = await openSaveDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(SAVE_STORE, 'readwrite');
+      tx.objectStore(SAVE_STORE).put(buildSaveData(), SAVE_KEY);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (e) {
+    console.warn('저장 실패:', e);
+  }
+}
+
+function applySaveData(saved) {
+  for (const [wx, y, wz, blockId] of saved.diffs || []) {
+    world.diffs.set(`${wx},${y},${wz}`, blockId);
+  }
+  // 이미 diffs 적용 전에 생성된 청크가 있을 수 있으니(불러오기가 비동기라 첫 화면은
+  // 이미 그려지기 시작함) 다시 덮어씌우고 리메싱한다.
+  for (const chunk of world.chunks.values()) {
+    world.applyDiffsToChunk(chunk);
+    if (chunk.mesh) world._remesh(world.key(chunk.cx, chunk.cz));
+  }
+  if (saved.player) {
+    camera.position.set(saved.player.x, saved.player.y, saved.player.z);
+    yaw = saved.player.yaw; pitch = saved.player.pitch;
+  }
+  if (typeof saved.health === 'number') health = saved.health;
+  if (typeof saved.hunger === 'number') hunger = saved.hunger;
+  if (Array.isArray(saved.slots)) {
+    for (let i = 0; i < TOTAL_SLOTS; i++) slots[i] = saved.slots[i] || null;
+  }
+  if (saved.renderRadius) {
+    world.setRadius(saved.renderRadius);
+    radiusSlider.value = String(saved.renderRadius);
+    radiusValueLabel.textContent = String(saved.renderRadius);
+  }
+  renderVitals();
+  renderSlots();
+}
+
+loadSave().then((saved) => { if (saved) applySaveData(saved); });
+
+// 주기적 자동 저장 + 탭을 벗어나거나 닫을 때 한 번 더(최선 노력, 보장은 안 됨)
+setInterval(writeSave, 5000);
+document.addEventListener('visibilitychange', () => { if (document.hidden) writeSave(); });
+window.addEventListener('beforeunload', writeSave);
 
 const hud = document.getElementById('hud');
 const mineProgressEl = document.getElementById('mine-progress');
