@@ -261,6 +261,61 @@ class ValueNoise2D {
 }
 function lerp(a, b, t) { return a + (b - a) * t; }
 
+// 2D 버전과 같은 그라디언트 노이즈를 3차원으로 확장한 것(동굴 조각용). 지형 높이/바이오미는
+// 2D 노이즈로 충분하지만, 동굴처럼 3차원 공간에서 구불구불 이어지는 형태를 표현하려면
+// y축까지 포함한 3D 노이즈가 필요하다.
+class ValueNoise3D {
+  constructor(seed) {
+    const rand = mulberry32(seed);
+    this.perm = new Uint8Array(512);
+    const p = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) p[i] = i;
+    for (let i = 255; i > 0; i--) {
+      const j = Math.floor(rand() * (i + 1));
+      const tmp = p[i]; p[i] = p[j]; p[j] = tmp;
+    }
+    for (let i = 0; i < 512; i++) this.perm[i] = p[i & 255];
+  }
+  _grad(hash, x, y, z) {
+    // 표준 Perlin 3D 그라디언트 선택(비트 트릭으로 12방향 중 하나를 고름)
+    const h = hash & 15;
+    const u = h < 8 ? x : y;
+    const v = h < 4 ? y : (h === 12 || h === 14 ? x : z);
+    return ((h & 1) === 0 ? u : -u) + ((h & 2) === 0 ? v : -v);
+  }
+  _fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+  noise(x, y, z) {
+    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255, Z = Math.floor(z) & 255;
+    const xf = x - Math.floor(x), yf = y - Math.floor(y), zf = z - Math.floor(z);
+    const u = this._fade(xf), v = this._fade(yf), w = this._fade(zf);
+    const A = this.perm[X] + Y, AA = this.perm[A] + Z, AB = this.perm[A + 1] + Z;
+    const B = this.perm[X + 1] + Y, BA = this.perm[B] + Z, BB = this.perm[B + 1] + Z;
+    return lerp(
+      lerp(
+        lerp(this._grad(this.perm[AA], xf, yf, zf), this._grad(this.perm[BA], xf - 1, yf, zf), u),
+        lerp(this._grad(this.perm[AB], xf, yf - 1, zf), this._grad(this.perm[BB], xf - 1, yf - 1, zf), u),
+        v
+      ),
+      lerp(
+        lerp(this._grad(this.perm[AA + 1], xf, yf, zf - 1), this._grad(this.perm[BA + 1], xf - 1, yf, zf - 1), u),
+        lerp(this._grad(this.perm[AB + 1], xf, yf - 1, zf - 1), this._grad(this.perm[BB + 1], xf - 1, yf - 1, zf - 1), u),
+        v
+      ),
+      w
+    );
+  }
+  fbm(x, y, z, octaves = 3, lacunarity = 2.0, gain = 0.5) {
+    let amp = 1, freq = 1, sum = 0, norm = 0;
+    for (let i = 0; i < octaves; i++) {
+      sum += this.noise(x * freq, y * freq, z * freq) * amp;
+      norm += amp;
+      amp *= gain;
+      freq *= lacunarity;
+    }
+    return sum / norm; // 대략 [-1, 1]
+  }
+}
+
 // 정수 좌표용 결정론적 해시(0~1): 나무 배치처럼 청크를 다시 만들어도 항상 같은 자리에
 // 나오게 하려고 fbm 지형 노이즈와는 별개로 씀 (재입장/재로딩 시 나무가 움직이면 이상해 보임)
 function hash01(x, z, seed) {
@@ -288,6 +343,7 @@ const BLOCK = {
   WOOD_AXE: 16, STONE_AXE: 17, IRON_AXE: 18,
   WOOD_SHOVEL: 19, STONE_SHOVEL: 20, IRON_SHOVEL: 21,
   FURNACE: 22, IRON_INGOT: 23,
+  SNOW: 24, WATER: 25,
 };
 const ATLAS_COLS = 5, ATLAS_ROWS = 6, TILE_PX = 16;
 const TILE = {
@@ -299,6 +355,7 @@ const TILE = {
   WOOD_AXE_ICON: 18, STONE_AXE_ICON: 19, IRON_AXE_ICON: 20,
   WOOD_SHOVEL_ICON: 21, STONE_SHOVEL_ICON: 22, IRON_SHOVEL_ICON: 23,
   FURNACE_TOP: 24, FURNACE_SIDE: 25, IRON_INGOT_ICON: 26,
+  SNOW_TOP: 27, SNOW_SIDE: 28, WATER: 29,
 };
 // 블록별 [top, bottom, side] 타일 인덱스 (설치 가능한 블록만 등록)
 const BLOCK_TILES = {
@@ -313,6 +370,8 @@ const BLOCK_TILES = {
   [BLOCK.COAL_ORE]: [TILE.COAL_ORE, TILE.COAL_ORE, TILE.COAL_ORE],
   [BLOCK.IRON_ORE]: [TILE.IRON_ORE, TILE.IRON_ORE, TILE.IRON_ORE],
   [BLOCK.FURNACE]: [TILE.FURNACE_TOP, TILE.STONE, TILE.FURNACE_SIDE],
+  [BLOCK.SNOW]: [TILE.SNOW_TOP, TILE.DIRT, TILE.SNOW_SIDE],
+  [BLOCK.WATER]: [TILE.WATER, TILE.WATER, TILE.WATER],
 };
 // 인벤토리 아이콘용 타일 (설치 불가능한 아이템까지 전부 포함)
 const ITEM_ICON_TILE = {
@@ -337,16 +396,18 @@ const LEAVES_APPLE_DROP_CHANCE = 0.15; // 나뭇잎 채굴 시 사과가 추가�
 // 있으면 TIER_SPEED_MULT만큼 더 빨라진다. 잔디/흙/모래는 삽의 존재 의미를 위해 살짝
 // 지연(0.25초)을 줬다 - 맨손으로도 여전히 거의 즉시 캐지지만, 삽을 들면 더 빠르다.
 const BLOCK_HARDNESS = {
-  [BLOCK.GRASS]: 0.25, [BLOCK.DIRT]: 0.25, [BLOCK.SAND]: 0.25, [BLOCK.LEAVES]: 0,
+  [BLOCK.GRASS]: 0.25, [BLOCK.DIRT]: 0.25, [BLOCK.SAND]: 0.25, [BLOCK.SNOW]: 0.25, [BLOCK.LEAVES]: 0,
   [BLOCK.LOG]: 0.3, [BLOCK.PLANKS]: 0.3, [BLOCK.CRAFTING_TABLE]: 0.3,
   [BLOCK.STONE]: 0.6, [BLOCK.COAL_ORE]: 0.7, [BLOCK.IRON_ORE]: 0.9, [BLOCK.FURNACE]: 0.6,
 };
 // 도구별로 배속이 적용되는 블록 분류(곡괭이=돌 계열, 도끼=나무 계열, 삽=흙 계열).
 // 들고 있는 도구의 분류와 캐려는 블록의 분류가 일치할 때만 TIER_SPEED_MULT가 적용된다.
+// 물(WATER)은 채굴 대상 자체가 아니라서(아래 isBlockSolid 참고, 레이캐스트가 통과함)
+// 여기 등록할 필요가 없다.
 const CATEGORY_BLOCKS = {
   pickaxe: new Set([BLOCK.STONE, BLOCK.COAL_ORE, BLOCK.IRON_ORE, BLOCK.FURNACE]),
   axe: new Set([BLOCK.LOG, BLOCK.PLANKS, BLOCK.CRAFTING_TABLE]),
-  shovel: new Set([BLOCK.GRASS, BLOCK.DIRT, BLOCK.SAND]),
+  shovel: new Set([BLOCK.GRASS, BLOCK.DIRT, BLOCK.SAND, BLOCK.SNOW]),
 };
 const TOOL_CATEGORY = {
   [BLOCK.WOOD_PICKAXE]: 'pickaxe', [BLOCK.STONE_PICKAXE]: 'pickaxe', [BLOCK.IRON_PICKAXE]: 'pickaxe',
@@ -368,7 +429,13 @@ const BLOCK_NAME_KO = {
   [BLOCK.WOOD_AXE]: '나무 도끼', [BLOCK.STONE_AXE]: '돌 도끼', [BLOCK.IRON_AXE]: '철 도끼',
   [BLOCK.WOOD_SHOVEL]: '나무 삽', [BLOCK.STONE_SHOVEL]: '돌 삽', [BLOCK.IRON_SHOVEL]: '철 삽',
   [BLOCK.FURNACE]: '용광로', [BLOCK.IRON_INGOT]: '철 주괴',
+  [BLOCK.SNOW]: '눈', [BLOCK.WATER]: '물',
 };
+// 물은 시각적으로는 꽉 찬 블록이지만(반투명 렌더링 없이 단순하게), 충돌/레이캐스트에서는
+// 공기처럼 취급해서 수영 로직 없이도 그냥 통과할 수 있게 한다 - 그래서 채굴 대상으로
+// 선택되지도 않고(물을 얻는 방법이 없음), 플레이어가 호수 위를 걸어서 지나갈 수도 없이
+// 자유비행으로 통과하게 된다(이 게임은 기존에도 자유비행 이동이라 수영 전용 처리 불필요).
+function isBlockSolid(id) { return id !== BLOCK.AIR && id !== BLOCK.WATER; }
 // ---------- 제련(용광로) ----------
 // 원석을 넣고 연료(석탄)를 태워서 시간이 지나면 자동으로 완제품이 나온다. 작업대와
 // 마찬가지로 용광로를 직접 근처에 놓아야 하는 건 아니고(이 게임은 제작대도 그렇듯
@@ -586,6 +653,19 @@ function makeAtlasTexture() {
       }
     }
   }
+  // 눈: 잔디처럼 옆면 위쪽에 흰 눈 오버레이 + 아래는 흙 색
+  fillTile(TILE.SNOW_TOP, '#e8eef2', { noise: 14 });
+  fillTile(TILE.SNOW_SIDE, '#8a6a45', { noise: 20 });
+  {
+    const cx = TILE.SNOW_SIDE % ATLAS_COLS, cy = Math.floor(TILE.SNOW_SIDE / ATLAS_COLS);
+    for (let y = 0; y < 5; y++) for (let x = 0; x < TILE_PX; x++) {
+      const amt = Math.floor((rand() - 0.5) * 16);
+      px(cx, cy, x, y, shade('#e8eef2', amt));
+    }
+  }
+  // 물: 단순하게 불투명한 청록빛 블록으로(반투명 렌더링 없이) - 수영 로직 없이 그냥
+  // 통과 가능한 지형 장식용 블록이라 이 정도로 충분하다.
+  fillTile(TILE.WATER, '#3d78b0', { noise: 16 });
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.magFilter = THREE.NearestFilter;
@@ -601,6 +681,12 @@ const SHADOW_CHUNK_RADIUS = 1; // 그림자는 렌더 거리와 무관하게 플
 // (앞으로 오브젝트가 더 늘어날 걸 감안해 여유를 두려고 2 -> 1로 줄임 - 3x3청크만 그림자 처리)
 function idx(x, y, z) { return (y * CHUNK_Z + z) * CHUNK_X + x; }
 
+// 바이오미 3종(지형 높이와 무관한 저주파 노이즈로 결정) + 호수 수면 높이.
+// baseHeight(26) 기준으로 원래도 "height <= baseHeight-6(=20)"인 저지대는 모래로 덮였는데,
+// 그 저지대 규모와 맞춰서 호수도 비슷한 높이대에 잠기도록 WATER_LEVEL을 20으로 잡았다.
+const BIOME = { GRASS: 0, DESERT: 1, SNOW: 2 };
+const WATER_LEVEL = 20;
+
 // 광맥: 3칸 단위 셀로 묶어서 판정 - 셀 하나가 광맥 "당첨"이면 그 안에서만 개별 블록을
 // 확률적으로 채워서 뭉친 덩어리 모양이 나오게 한다(칸마다 독립 확률이면 소금 뿌린 듯 흩어짐).
 function oreAt(wx, wy, wz) {
@@ -612,10 +698,10 @@ function oreAt(wx, wy, wz) {
 }
 
 class Chunk {
-  constructor(cx, cz, noise, biomeNoise) {
+  constructor(cx, cz, gen) {
     this.cx = cx; this.cz = cz;
     this.blocks = new Uint8Array(CHUNK_X * CHUNK_Y * CHUNK_Z);
-    this.generateTerrain(noise, biomeNoise);
+    this.generateTerrain(gen);
     this.mesh = null;
   }
   get(x, y, z) {
@@ -624,36 +710,73 @@ class Chunk {
   }
   set(x, y, z, id) { this.blocks[idx(x, y, z)] = id; }
 
-  generateTerrain(noise, biomeNoise) {
+  generateTerrain(gen) {
+    const { noise, biomeNoise, mountainNoise, lakeNoise, caveNoise } = gen;
     const baseHeight = 26;
     const heights = new Int32Array(CHUNK_X * CHUNK_Z);
-    const isDesert = new Uint8Array(CHUNK_X * CHUNK_Z);
+    const biomes = new Uint8Array(CHUNK_X * CHUNK_Z);
     for (let x = 0; x < CHUNK_X; x++) {
       for (let z = 0; z < CHUNK_Z; z++) {
         const wx = this.cx * CHUNK_X + x;
         const wz = this.cz * CHUNK_Z + z;
-        const n = noise.fbm(wx * 0.02, wz * 0.02, 4, 2.0, 0.5); // [-1,1]
-        const height = Math.max(2, Math.min(CHUNK_Y - 2, Math.round(baseHeight + n * 12)));
+        const n = noise.fbm(wx * 0.02, wz * 0.02, 4, 2.0, 0.5); // [-1,1] - 기존의 완만한 굴곡
+
+        // 산악: 지형 기복과는 별개인 저주파 노이즈로 "이 지역이 산악인지"를 정하고, 그
+        // 지역 안에서만 훨씬 큰 높이(+거친 디테일)를 더한다. 평지에서는 mountainRegion이
+        // 0이라 기존 높이 계산과 완전히 동일하게 유지된다.
+        const mountainRegion = smoothstep(0.15, 0.55, mountainNoise.fbm(wx * 0.006, wz * 0.006, 3, 2.0, 0.5));
+        const ruggedDetail = noise.fbm(wx * 0.06, wz * 0.06, 3, 2.0, 0.5);
+        const mountainBoost = mountainRegion * (16 + ruggedDetail * 12);
+        let height = Math.round(baseHeight + n * 12 + mountainBoost);
+
+        // 바이오미: 지형 높이와 무관한 저주파 노이즈 하나로 사막/설원/일반 잔디 3분류
+        const biomeVal = biomeNoise.fbm(wx * 0.004, wz * 0.004, 3, 2.0, 0.5); // [-1,1]
+        let biome = BIOME.GRASS;
+        if (biomeVal > 0.25) biome = BIOME.DESERT;
+        else if (biomeVal < -0.3) biome = BIOME.SNOW;
+        biomes[x * CHUNK_Z + z] = biome;
+
+        // 호수: 산악 지역이 아닌 곳에서만, 별도의 저주파 노이즈로 저지대 분지를 만들고
+        // 그 안은 강제로 수면 아래까지 지형을 낮춘 뒤 물로 채운다.
+        const lake = mountainRegion < 0.1 && lakeNoise.fbm(wx * 0.01, wz * 0.01, 3, 2.0, 0.5) > 0.45;
+        if (lake) {
+          const depth = 3 + Math.floor(hash01(wx, wz, 771122) * 4); // 수면 아래 3~6칸 깊이
+          height = Math.min(height, WATER_LEVEL - depth);
+        }
+        height = Math.max(2, Math.min(CHUNK_Y - 2, height));
         heights[x * CHUNK_Z + z] = height;
-        // 아주 낮은 주파수로 별도 샘플링해서 지형 기복과 무관한 큰 규모 바이오미 경계를 만든다
-        const desert = biomeNoise.fbm(wx * 0.004, wz * 0.004, 3, 2.0, 0.5) > 0.25;
-        isDesert[x * CHUNK_Z + z] = desert ? 1 : 0;
+
         for (let y = 0; y < CHUNK_Y; y++) {
           let block = BLOCK.AIR;
           if (y < height - 4) block = oreAt(wx, y, wz);
           else if (y < height) block = BLOCK.DIRT;
-          else if (y === height) block = (desert || height <= baseHeight - 6) ? BLOCK.SAND : BLOCK.GRASS;
+          else if (y === height) {
+            if (biome === BIOME.DESERT || height <= baseHeight - 6) block = BLOCK.SAND;
+            else if (biome === BIOME.SNOW) block = BLOCK.SNOW;
+            else block = BLOCK.GRASS;
+          }
+          // 동굴: 지표 바로 아래(천장 보존)와 세계 맨 밑바닥(구멍 노출 방지)은 제외하고
+          // 3D 노이즈로 자연스럽게 이어지는 빈 공간을 깎아낸다. 임계값 0.22는 실측
+          // 분포(3옥타브 fbm, 표준편차 약 0.175)에서 위쪽 약 10%를 깎아내도록 고른 값.
+          if (block !== BLOCK.AIR && y > 2 && y < height - 3) {
+            const cave = caveNoise.fbm(wx * 0.08, y * 0.1, wz * 0.08, 3, 2.0, 0.5);
+            if (cave > 0.22) block = BLOCK.AIR;
+          }
           this.set(x, y, z, block);
+        }
+        if (lake) {
+          for (let y = height + 1; y <= WATER_LEVEL; y++) this.set(x, y, z, BLOCK.WATER);
         }
       }
     }
     // 나무 배치: 통나무/나뭇잎을 실제로 얻을 수 있는 유일한 경로라서 반드시 필요.
-    // 사막 바이오미에는 나무를 심지 않는다. 나무 전체(밑동+수관)가 이 청크 안에 완전히
-    // 들어가도록 가장자리는 피한다(가장자리까지 허용하면 이웃 청크에 걸치는 나무를 다뤄야
-    // 해서 훨씬 복잡해짐).
+    // 사막 바이오미에는 나무를 심지 않는다(설원/타이가는 나무가 있어야 자연스러워서 허용).
+    // 호수 바닥(height <= baseHeight-6 조건에 이미 포함됨)에도 자연히 심기지 않는다.
+    // 나무 전체(밑동+수관)가 이 청크 안에 완전히 들어가도록 가장자리는 피한다(가장자리까지
+    // 허용하면 이웃 청크에 걸치는 나무를 다뤄야 해서 훨씬 복잡해짐).
     for (let x = 2; x < CHUNK_X - 2; x++) {
       for (let z = 2; z < CHUNK_Z - 2; z++) {
-        if (isDesert[x * CHUNK_Z + z]) continue;
+        if (biomes[x * CHUNK_Z + z] === BIOME.DESERT) continue;
         const height = heights[x * CHUNK_Z + z];
         const wx = this.cx * CHUNK_X + x, wz = this.cz * CHUNK_Z + z;
         if (height > baseHeight - 6 && hash01(wx, wz, 918273645) < 0.015) {
@@ -808,6 +931,14 @@ class DynamicWorld {
     this.material = new THREE.MeshLambertMaterial({ map: atlasTexture });
     this.noise = new ValueNoise2D(seed);
     this.biomeNoise = new ValueNoise2D(seed + 1000); // 지형 높이와 무관한 별도 노이즈로 바이오미 경계 결정
+    this.mountainNoise = new ValueNoise2D(seed + 2000); // 산악 지역 결정(지형 기복과 별개)
+    this.lakeNoise = new ValueNoise2D(seed + 3000);     // 호수 지역 결정
+    this.caveNoise = new ValueNoise3D(seed + 4000);     // 동굴 조각용 3D 노이즈
+    // Chunk.generateTerrain에 매번 5개를 따로 넘기지 않도록 하나로 묶어서 전달한다
+    this.gen = {
+      noise: this.noise, biomeNoise: this.biomeNoise, mountainNoise: this.mountainNoise,
+      lakeNoise: this.lakeNoise, caveNoise: this.caveNoise,
+    };
     this.chunks = new Map();      // key -> Chunk (블록 데이터는 있지만 메시는 아직 없을 수 있음)
     this.meshQueue = [];          // 메싱 대기열 (프레임당 1개씩 처리)
     this.queuedKeys = new Set();  // meshQueue 중복 방지
@@ -854,7 +985,7 @@ class DynamicWorld {
     for (const k of desired) {
       if (this.chunks.has(k)) continue;
       const [kcx, kcz] = k.split(',').map(Number);
-      const chunk = new Chunk(kcx, kcz, this.noise, this.biomeNoise);
+      const chunk = new Chunk(kcx, kcz, this.gen);
       this.applyDiffsToChunk(chunk);
       this.chunks.set(k, chunk);
       if (!this.queuedKeys.has(k)) {
@@ -1438,7 +1569,7 @@ let isMining = false;
 // 매 프레임 호출되는 함수라 THREE.Vector3/클로저를 매번 새로 만들지 않고 재사용한다
 // (9단계 성능 패스: GC 압박 줄이기).
 const _rayDir = new THREE.Vector3();
-function isSolidForRay(x, y, z) { return world.getBlockWorld(x, y, z) !== BLOCK.AIR; }
+function isSolidForRay(x, y, z) { return isBlockSolid(world.getBlockWorld(x, y, z)); }
 function updateTarget() {
   _rayDir.set(0, 0, -1).applyQuaternion(camera.quaternion);
   const o = camera.position;
@@ -1493,7 +1624,7 @@ function aabbCollides(px, py, pz) {
   for (let x = minX; x <= maxX; x++) {
     for (let y = minY; y <= maxY; y++) {
       for (let z = minZ; z <= maxZ; z++) {
-        if (world.getBlockWorld(x, y, z) !== BLOCK.AIR) return true;
+        if (isBlockSolid(world.getBlockWorld(x, y, z))) return true;
       }
     }
   }
