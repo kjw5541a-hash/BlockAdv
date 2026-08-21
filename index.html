@@ -401,6 +401,7 @@ function makeAtlasTexture() {
 
 // ---------- 청크 ----------
 const CHUNK_X = 16, CHUNK_Z = 16, CHUNK_Y = 64;
+const SHADOW_CHUNK_RADIUS = 2; // 그림자는 렌더 거리와 무관하게 플레이어 주변 이 반경까지만
 function idx(x, y, z) { return (y * CHUNK_Z + z) * CHUNK_X + x; }
 
 class Chunk {
@@ -657,6 +658,16 @@ class DynamicWorld {
     }
     // 대기열에서도 범위 밖으로 나간 항목 정리
     this.meshQueue = this.meshQueue.filter((k) => desired.has(k));
+
+    // 플레이어가 옮겨서 중심이 바뀌었으니, 이미 메시가 있는 청크들의 그림자 on/off도
+    // 새 중심 기준으로 다시 계산한다 (리메싱 없이 플래그만 바꾸는 거라 저렴함).
+    for (const chunk of this.chunks.values()) {
+      if (!chunk.mesh) continue;
+      const dist = Math.max(Math.abs(chunk.cx - cx), Math.abs(chunk.cz - cz));
+      const inShadowRange = dist <= SHADOW_CHUNK_RADIUS;
+      chunk.mesh.castShadow = inShadowRange;
+      chunk.mesh.receiveShadow = inShadowRange;
+    }
   }
 
   // 프레임당 최대 1개 청크만 생성/메싱해서 메인 스레드 프레임 예산을 넘지 않게 함
@@ -673,6 +684,12 @@ class DynamicWorld {
     if (!chunk) return;
     if (chunk.mesh) { this.scene.remove(chunk.mesh); chunk.dispose(); }
     const mesh = chunk.buildMesh(this.material, (wx, y, wz) => this.getBlockWorld(wx, y, wz));
+    // 그림자는 렌더 거리 전체가 아니라 플레이어 주변 좁은 반경에서만 켠다(비용 억제).
+    // 새로 만든 메시는 기본이 false라 리메싱될 때마다 다시 켜줘야 한다.
+    const dist = Math.max(Math.abs(chunk.cx - this._centerCx), Math.abs(chunk.cz - this._centerCz));
+    const inShadowRange = dist <= SHADOW_CHUNK_RADIUS;
+    mesh.castShadow = inShadowRange;
+    mesh.receiveShadow = inShadowRange;
     this.scene.add(mesh);
   }
 
@@ -727,19 +744,36 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPrefere
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
+// 그림자는 플레이어 주변 반경만 켜서(SHADOW_CHUNK_RADIUS) 비용을 렌더 거리와 무관하게 묶어둔다.
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
-const SKY_COLOR = 0x87ceeb;
-scene.background = new THREE.Color(SKY_COLOR);
-scene.fog = new THREE.Fog(SKY_COLOR, 60, 160);
+const SKY_COLOR_DAY = new THREE.Color(0x87ceeb);
+const SKY_COLOR_NIGHT = new THREE.Color(0x0a1128);
+scene.background = new THREE.Color(SKY_COLOR_DAY);
+scene.fog = new THREE.Fog(SKY_COLOR_DAY.getHex(), 60, 160);
 
 const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 500);
 camera.position.set(CHUNK_X / 2, 50, CHUNK_Z * 1.5);
 
-// 동적 라이트 없음: 방향광 1개(태양) + 환경광 1개만 사용
+// 동적 라이트 없음(블록별 조명 금지) 원칙은 그대로 - 방향광 1개(태양) + 환경광 1개만 사용.
+// 다만 낮/밤 주기에 따라 이 방향광의 위치/색/세기를 시간 경과로 바꾼다(아래 낮/밤 섹션).
+const SUN_DIST = 250; // 태양은 카메라 기준 이 거리만큼 떨어진 곳에 매 프레임 재배치됨
 const sun = new THREE.DirectionalLight(0xffffff, 1.1);
 sun.position.set(60, 100, 40);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+sun.shadow.camera.near = 1;
+// far는 태양~타깃(플레이어) 거리보다 넉넉히 커야 함 - 안 그러면 정작 그림자가 필요한
+// 플레이어 주변이 그림자 카메라의 원거리 절단면 밖으로 빠져서 그림자가 아예 안 생김.
+sun.shadow.camera.far = SUN_DIST * 1.6;
+sun.shadow.camera.left = -40; sun.shadow.camera.right = 40;
+sun.shadow.camera.top = 40; sun.shadow.camera.bottom = -40;
+sun.shadow.bias = -0.0015;
 scene.add(sun);
+sun.target = new THREE.Object3D();
+scene.add(sun.target);
 const ambient = new THREE.AmbientLight(0xaecbe0, 0.55);
 scene.add(ambient);
 
@@ -748,6 +782,103 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
+
+// ---------- 낮/밤 주기 (조명 변화만, 몹 스폰 없음 - 기획안 원안 그대로) ----------
+function smoothstep(edge0, edge1, x) {
+  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+const DAY_LENGTH_SEC = 300; // 낮밤 한 바퀴 = 5분 (관찰하기 좋은 속도로 임의 설정)
+let dayTime = 0.28; // 0=자정, 0.25=일출, 0.5=정오, 0.75=일몰. 아침 근처에서 시작.
+const NIGHT_SUN_COLOR = new THREE.Color(0x99aaff);
+const DAY_SUN_COLOR = new THREE.Color(0xffffff);
+const NIGHT_AMBIENT_COLOR = new THREE.Color(0x1c2340);
+const DAY_AMBIENT_COLOR = new THREE.Color(0xaecbe0);
+const _scratchColor = new THREE.Color();
+
+function updateDayNight(dt) {
+  dayTime = (dayTime + dt / DAY_LENGTH_SEC) % 1;
+  const angle = (dayTime - 0.25) * Math.PI * 2; // 0.25(일출)일 때 지평선, 0.5(정오)일 때 천정
+  const sunHeight = Math.sin(angle);
+  const dayFactor = smoothstep(-0.25, 0.25, sunHeight); // 일출/일몰 부근에서만 부드럽게 전환
+
+  sun.target.position.copy(camera.position);
+  sun.position.set(
+    camera.position.x + Math.cos(angle) * SUN_DIST,
+    camera.position.y + Math.max(sunHeight, -0.15) * SUN_DIST, // 너무 밑으로 안 내려가게(그림자 카메라 안정성)
+    camera.position.z + SUN_DIST * 0.35
+  );
+  sun.intensity = 0.05 + 1.05 * dayFactor;
+  sun.color.lerpColors(NIGHT_SUN_COLOR, DAY_SUN_COLOR, dayFactor);
+  ambient.intensity = 0.12 + 0.43 * dayFactor;
+  ambient.color.lerpColors(NIGHT_AMBIENT_COLOR, DAY_AMBIENT_COLOR, dayFactor);
+
+  _scratchColor.lerpColors(SKY_COLOR_NIGHT, SKY_COLOR_DAY, dayFactor);
+  scene.background.copy(_scratchColor);
+  scene.fog.color.copy(_scratchColor);
+
+  starsMaterial.opacity = 1 - smoothstep(0.0, 0.35, dayFactor);
+  stars.position.copy(camera.position);
+}
+
+// ---------- 별(밤에만 보임) ----------
+const STAR_COUNT = 1200, STAR_RADIUS = 350;
+const starPositions = new Float32Array(STAR_COUNT * 3);
+{
+  const starRand = mulberry32(77);
+  for (let i = 0; i < STAR_COUNT; i++) {
+    // 구 표면에 고르게 뿌리기
+    const u = starRand(), v = starRand();
+    const theta = 2 * Math.PI * u, phi = Math.acos(2 * v - 1);
+    starPositions[i * 3] = STAR_RADIUS * Math.sin(phi) * Math.cos(theta);
+    starPositions[i * 3 + 1] = Math.abs(STAR_RADIUS * Math.cos(phi)) * 0.6 + STAR_RADIUS * 0.1; // 하늘 위쪽 절반 위주
+    starPositions[i * 3 + 2] = STAR_RADIUS * Math.sin(phi) * Math.sin(theta);
+  }
+}
+const starsGeometry = new THREE.BufferGeometry();
+starsGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+const starsMaterial = new THREE.PointsMaterial({
+  color: 0xffffff, size: 1.6, sizeAttenuation: false,
+  transparent: true, opacity: 0, fog: false, depthWrite: false,
+});
+const stars = new THREE.Points(starsGeometry, starsMaterial);
+scene.add(stars);
+
+// ---------- 구름 (장식용 - 낮은 폴리곤 몇 개만 띄우고 천천히 흘려보냄) ----------
+const CLOUD_COUNT = 18, CLOUD_HEIGHT = 85, CLOUD_FIELD_RADIUS = 220;
+const cloudGeometry = new THREE.BoxGeometry(1, 1, 1);
+const cloudMaterial = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, fog: true });
+const clouds = [];
+{
+  const cloudRand = mulberry32(4242);
+  for (let i = 0; i < CLOUD_COUNT; i++) {
+    const mesh = new THREE.Mesh(cloudGeometry, cloudMaterial);
+    const w = 14 + cloudRand() * 22, d = 10 + cloudRand() * 16;
+    mesh.scale.set(w, 3 + cloudRand() * 2, d);
+    const angle = cloudRand() * Math.PI * 2, radius = cloudRand() * CLOUD_FIELD_RADIUS;
+    mesh.position.set(
+      camera.position.x + Math.cos(angle) * radius,
+      CLOUD_HEIGHT + cloudRand() * 10,
+      camera.position.z + Math.sin(angle) * radius
+    );
+    scene.add(mesh);
+    clouds.push({ mesh, driftSpeed: 1.5 + cloudRand() * 2 });
+  }
+}
+function updateClouds(dt) {
+  const maxDistSq = CLOUD_FIELD_RADIUS * CLOUD_FIELD_RADIUS;
+  for (const cloud of clouds) {
+    cloud.mesh.position.x += cloud.driftSpeed * dt;
+    const dx = cloud.mesh.position.x - camera.position.x;
+    const dz = cloud.mesh.position.z - camera.position.z;
+    if (dx * dx + dz * dz > maxDistSq) {
+      // 시야(안개) 밖으로 멀어진 구름은 반대편 가장자리로 재활용한다 - 안개에 가려서 순간이동이 안 보임
+      const angle = Math.random() * Math.PI * 2;
+      cloud.mesh.position.x = camera.position.x - Math.cos(angle) * CLOUD_FIELD_RADIUS;
+      cloud.mesh.position.z = camera.position.z - Math.sin(angle) * CLOUD_FIELD_RADIUS;
+    }
+  }
+}
 
 // ---------- 월드 생성 (플레이어 중심 동적 로딩, 기본 반경 4청크) ----------
 // 기본값은 기획안 3번 항목 기준. 실기기 성능 테스트 결과에 따라 조정 예정(9단계).
@@ -1458,6 +1589,8 @@ function animate() {
   world.update(camera.position.x, camera.position.z);
   world.processQueue();
   updateVitals(dt);
+  updateDayNight(dt);
+  updateClouds(dt);
 
   updateTouchMineArming();
   if (!inventoryOpen && !isDead) updateTarget(); else { currentTarget = null; highlightBox.visible = false; }
