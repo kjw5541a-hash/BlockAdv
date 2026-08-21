@@ -401,7 +401,8 @@ function makeAtlasTexture() {
 
 // ---------- 청크 ----------
 const CHUNK_X = 16, CHUNK_Z = 16, CHUNK_Y = 64;
-const SHADOW_CHUNK_RADIUS = 2; // 그림자는 렌더 거리와 무관하게 플레이어 주변 이 반경까지만
+const SHADOW_CHUNK_RADIUS = 1; // 그림자는 렌더 거리와 무관하게 플레이어 주변 이 반경까지만
+// (앞으로 오브젝트가 더 늘어날 걸 감안해 여유를 두려고 2 -> 1로 줄임 - 3x3청크만 그림자 처리)
 function idx(x, y, z) { return (y * CHUNK_Z + z) * CHUNK_X + x; }
 
 class Chunk {
@@ -768,8 +769,10 @@ sun.shadow.camera.near = 1;
 // far는 태양~타깃(플레이어) 거리보다 넉넉히 커야 함 - 안 그러면 정작 그림자가 필요한
 // 플레이어 주변이 그림자 카메라의 원거리 절단면 밖으로 빠져서 그림자가 아예 안 생김.
 sun.shadow.camera.far = SUN_DIST * 1.6;
-sun.shadow.camera.left = -40; sun.shadow.camera.right = 40;
-sun.shadow.camera.top = 40; sun.shadow.camera.bottom = -40;
+// 반경 1청크(3x3, 한 변 48유닛)만 덮으면 되므로 프러스텀도 그만큼만 - 덤으로 같은
+// 1024 해상도를 더 좁은 영역에 쓰니 그림자 선명도도 같이 올라간다.
+sun.shadow.camera.left = -26; sun.shadow.camera.right = 26;
+sun.shadow.camera.top = 26; sun.shadow.camera.bottom = -26;
 sun.shadow.bias = -0.0015;
 scene.add(sun);
 sun.target = new THREE.Object3D();
