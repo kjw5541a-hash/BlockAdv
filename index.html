@@ -30,7 +30,7 @@
   .inv-slot {
     width: 40px; height: 40px; box-sizing: border-box;
     background-color: rgba(255,255,255,0.08); border: 2px solid rgba(255,255,255,0.25);
-    border-radius: 4px; position: relative; user-select: none;
+    border-radius: 4px; position: relative; user-select: none; touch-action: none;
   }
   .inv-slot .icon {
     position: absolute; inset: 4px; image-rendering: pixelated; background-repeat: no-repeat;
@@ -45,6 +45,40 @@
   #hotbar {
     position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
     display: flex; gap: 4px; z-index: 10;
+  }
+  @media (max-width: 480px) {
+    .inv-slot { width: 32px; height: 32px; }
+    #inventory-grid, #inventory-hotbar-mirror { grid-template-columns: repeat(9, 32px); }
+    #craft-grid { grid-template-columns: repeat(3, 32px); }
+  }
+
+  /* 모바일 터치 컨트롤: 터치 가능 기기에서만 표시 (데스크탑은 마우스+포인터락 그대로) */
+  #joystick-base, #place-button, #inventory-toggle-button { display: none; }
+  body.touch-device #joystick-base,
+  body.touch-device #place-button,
+  body.touch-device #inventory-toggle-button { display: flex; }
+
+  #joystick-base {
+    position: fixed; left: 22px; bottom: 22px; width: 108px; height: 108px;
+    border-radius: 50%; background: rgba(255,255,255,0.10); border: 2px solid rgba(255,255,255,0.3);
+    z-index: 15; touch-action: none; align-items: center; justify-content: center;
+  }
+  #joystick-knob {
+    position: absolute; left: 50%; top: 50%; width: 46px; height: 46px;
+    margin: -23px 0 0 -23px; border-radius: 50%; background: rgba(255,255,255,0.35);
+    border: 2px solid rgba(255,255,255,0.65); pointer-events: none;
+  }
+  #place-button {
+    position: fixed; right: 22px; bottom: 30px; width: 62px; height: 62px; border-radius: 50%;
+    background: rgba(255,255,255,0.15); border: 2px solid rgba(255,255,255,0.45); color: #fff;
+    font-size: 12px; z-index: 15; touch-action: none; align-items: center; justify-content: center;
+    user-select: none;
+  }
+  #inventory-toggle-button {
+    position: fixed; right: 12px; top: 12px; padding: 8px 12px; border-radius: 6px;
+    background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.45); color: #fff;
+    font-size: 12px; z-index: 15; touch-action: none; align-items: center; justify-content: center;
+    user-select: none;
   }
   #vitals {
     position: fixed; bottom: 58px; left: 50%; transform: translateX(-50%);
@@ -102,9 +136,12 @@
   <div class="vital-bar"><div id="hunger-fill" class="vital-fill"></div></div>
 </div>
 <div id="hotbar"></div>
+<div id="joystick-base"><div id="joystick-knob"></div></div>
+<button id="place-button" type="button">설치/섭취</button>
+<button id="inventory-toggle-button" type="button">인벤토리</button>
 <div id="drag-ghost"></div>
 <div id="inventory-panel" class="hidden">
-  <h2>인벤토리 (E 또는 Esc로 닫기, 드래그로 정리)</h2>
+  <h2>인벤토리 (E/Esc 또는 우측 상단 버튼으로 닫기, 드래그로 정리)</h2>
   <div id="craft-area">
     <div id="craft-grid"></div>
     <div id="craft-arrow">&rarr;</div>
@@ -116,8 +153,9 @@
 <div id="overlay">
   <h1>BlockAdv</h1>
   <p id="overlay-msg">클릭(또는 탭)해서 시작 &mdash; WASD 이동, 마우스로 시점 회전, Space/Shift로 위아래 이동</p>
-  <p>좌클릭: 채굴 (홀드) / 우클릭: 설치 또는 (음식이면) 섭취 / 숫자키 1~9: 핫바 선택 / E: 인벤토리</p>
-  <p style="opacity:0.5; font-size:12px;">6단계 검증 빌드: 생존 지표(체력/배고픔). 화면 하단 막대 = 위 체력(빨강)/아래 배고픔(주황). 나뭇잎을 캐면 가끔 사과가 나옵니다. 배고픔이 0이 되면 체력이 서서히 줄고, 0이 되면 사망 후 인벤토리가 초기화된 채 리스폰합니다.</p>
+  <p>데스크탑: 좌클릭 채굴(홀드) / 우클릭 설치·섭취 / 숫자키 1~9 핫바 / E 인벤토리</p>
+  <p>모바일: 좌하단 조이스틱 이동 / 화면 드래그 시점 회전 / 화면 탭(홀드) 채굴 / 우측 버튼 설치·섭취·인벤토리</p>
+  <p style="opacity:0.5; font-size:12px;">7단계 검증 빌드: 모바일 터치 컨트롤.</p>
   <div id="render-distance">
     <label for="render-distance-slider">렌더 거리 (반경 <span id="render-distance-value">4</span>청크)</label>
     <input type="range" id="render-distance-slider" min="1" max="8" step="1" value="4">
@@ -134,14 +172,18 @@
 </script>
 <script>
 'use strict';
-/* ===================== BlockAdv - Step 6: Survival Stats (Health/Hunger) =====================
- * 배고픔은 시간이 지나면 서서히 줄고, 0이 되면 체력이 서서히 깎인다. 사과(나뭇잎 채굴 시
- * 확률적으로 드랍)를 우클릭으로 먹으면 배고픔이 회복된다. 체력 0 도달 시 사망 처리:
- * 인벤토리 초기화(결정된 정책) 후 스폰 지점에서 리스폰한다.
+/* ===================== BlockAdv - Step 7: Mobile Touch Controls =====================
+ * 터치 가능 기기(IS_TOUCH_DEVICE)에서만 가상 조이스틱(좌하단, 이동) + 우측 버튼(설치/섭취,
+ * 인벤토리)을 보여준다. 나머지 화면 영역은 드래그하면 시점 회전, 제자리에서 탭&홀드하면
+ * 화면 중앙 크로스헤어 기준으로 채굴(데스크탑 좌클릭 홀드와 완전히 같은 동작) - 문턱
+ * 거리를 넘는 순간 채굴을 취소하고 시점 회전으로 전환해서 둘을 구분한다. 인벤토리 드래그
+ * 앤드롭도 Pointer Events로 통일해서 마우스/터치 어느 쪽으로도 동작한다. 데스크탑의
+ * 마우스+포인터락 입력 경로는 그대로 남겨두고 pointerType으로 완전히 분리했다.
  *
  * 누적 기능: 청크 동적 로딩, 레이캐스팅 채굴/설치(+플레이어-블록 충돌), 인벤토리/핫바,
- * 3x3 셰이프리스 크래프팅. 아키텍처 원칙: 청크당 메시 1개(face culling 병합),
- * 텍스처 아틀라스 1장, 동적 라이트 없음(방향광+환경광만), 정점은 Uint8Array 블록 ID.
+ * 3x3 셰이프리스 크래프팅, 생존 지표(체력/배고픔, 사망/리스폰). 아키텍처 원칙: 청크당
+ * 메시 1개(face culling 병합), 텍스처 아틀라스 1장, 동적 라이트 없음(방향광+환경광만),
+ * 정점은 Uint8Array 블록 ID.
  * ======================================================================================= */
 
 // ---------- 시드 기반 노이즈 (Value Noise + fBm) ----------
@@ -640,6 +682,10 @@ class DynamicWorld {
   get pendingCount() { return this.meshQueue.length; }
 }
 
+// 터치 가능 기기에서만 가상 조이스틱/버튼을 보여준다 (데스크탑은 마우스+포인터락 그대로 유지)
+const IS_TOUCH_DEVICE = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+if (IS_TOUCH_DEVICE) document.body.classList.add('touch-device');
+
 // ---------- 씬 / 렌더러 / 카메라 ----------
 const canvas = document.createElement('canvas');
 document.body.insertBefore(canvas, document.getElementById('hud'));
@@ -845,7 +891,8 @@ function setInventoryOpen(open) {
   }
 }
 
-// 드래그앤드롭: 슬롯 하나를 집어서 다른 슬롯에 놓는다 (데스크탑 마우스 전용, 터치는 7단계에서)
+// 드래그앤드롭: 슬롯 하나를 집어서 다른 슬롯에 놓는다. Pointer Events로 통일해서
+// 마우스/터치 둘 다 같은 코드로 처리한다.
 let heldItem = null, heldFromIndex = -1;
 function slotAt(el) { return el ? parseInt(el.dataset.slotIndex, 10) : -1; }
 
@@ -892,10 +939,10 @@ function moveGhost(x, y) {
   dragGhost.style.left = `${x - ICON_SIZE / 2}px`;
   dragGhost.style.top = `${y - ICON_SIZE / 2}px`;
 }
-document.addEventListener('mousemove', (e) => { if (heldItem) moveGhost(e.clientX, e.clientY); });
-document.addEventListener('mouseup', (e) => {
+document.addEventListener('pointermove', (e) => { if (heldItem) moveGhost(e.clientX, e.clientY); });
+document.addEventListener('pointerup', (e) => {
   if (!heldItem) return;
-  const el = e.target.closest('.inv-slot');
+  const el = document.elementFromPoint(e.clientX, e.clientY)?.closest('.inv-slot');
   let i = slotAt(el);
   if (i === CRAFT_RESULT_INDEX) i = -1; // 결과 슬롯에는 되돌려 놓을 수 없음
   if (i >= 0) {
@@ -926,9 +973,9 @@ document.addEventListener('mouseup', (e) => {
   dragGhost.style.display = 'none';
   renderSlots();
 });
-invPanel.addEventListener('mousedown', onSlotMouseDown);
-hotbarEl.addEventListener('mousedown', (e) => {
-  // 플레이 중 핫바는 클릭으로 슬롯 선택만 가능(드래그는 인벤토리 열었을 때만)
+invPanel.addEventListener('pointerdown', onSlotMouseDown);
+hotbarEl.addEventListener('pointerdown', (e) => {
+  // 플레이 중 핫바는 탭으로 슬롯 선택만 가능(드래그는 인벤토리 열었을 때만)
   if (!inventoryOpen) {
     const el = e.target.closest('.inv-slot');
     if (el) selectedHotbar = slotAt(el);
@@ -1041,7 +1088,10 @@ function requestLock() {
 }
 overlay.addEventListener('click', () => {
   if (isDead) respawn();
-  requestLock();
+  // 터치 기기는 포인터락이 없으므로(마우스 커서 자체가 없음) 오버레이를 직접 닫는다.
+  // 포인터락 성공 여부는 pointerlockchange 리스너가 데스크탑에서 알아서 처리해준다.
+  if (IS_TOUCH_DEVICE) overlay.classList.add('hidden');
+  else requestLock();
 });
 
 // 렌더 거리 슬라이더 (오버레이 클릭 시 포인터락이 걸리지 않도록 이벤트 전파 차단)
@@ -1065,26 +1115,96 @@ document.addEventListener('mousemove', (e) => {
   pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
 });
 
-// 간단한 터치 드래그 시점 회전 (모바일 최소 지원 - 본격 터치 컨트롤은 로드맵 7단계)
-let touchId = null, lastTX = 0, lastTY = 0;
-canvas.addEventListener('touchstart', (e) => {
+// ---------- 모바일 터치 컨트롤 ----------
+// 좌하단: 가상 조이스틱(이동) / 나머지 화면: 드래그=시점 회전, 제자리 탭&홀드=채굴(화면
+// 중앙 크로스헤어 기준, 데스크탑 좌클릭과 동일한 raycast 대상) / 우측 버튼: 설치·섭취·인벤토리.
+// 데스크탑 마우스 입력(포인터락 기반)과 완전히 분리해서 서로 간섭하지 않게 pointerType으로 가른다.
+let joyX = 0, joyY = 0; // -1~1, 조이스틱 knob 오프셋 (조이스틱 미사용 시 0,0)
+let joystickPointerId = null;
+const joystickBaseEl = document.getElementById('joystick-base');
+const joystickKnobEl = document.getElementById('joystick-knob');
+const JOYSTICK_RADIUS = 42;
+
+function updateJoystickKnob() {
+  joystickKnobEl.style.transform = `translate(${joyX * JOYSTICK_RADIUS}px, ${joyY * JOYSTICK_RADIUS}px)`;
+}
+function setJoystickFromPoint(clientX, clientY) {
+  const rect = joystickBaseEl.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+  let dx = (clientX - cx) / JOYSTICK_RADIUS, dy = (clientY - cy) / JOYSTICK_RADIUS;
+  const len = Math.hypot(dx, dy);
+  if (len > 1) { dx /= len; dy /= len; }
+  joyX = dx; joyY = dy;
+  updateJoystickKnob();
+}
+joystickBaseEl.addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
+  joystickPointerId = e.pointerId;
+  setJoystickFromPoint(e.clientX, e.clientY);
+  e.preventDefault();
+});
+document.addEventListener('pointermove', (e) => {
+  if (e.pointerId !== joystickPointerId) return;
+  setJoystickFromPoint(e.clientX, e.clientY);
+});
+function releaseJoystick(e) {
+  if (e.pointerId !== joystickPointerId) return;
+  joystickPointerId = null;
+  joyX = 0; joyY = 0;
+  updateJoystickKnob();
+}
+document.addEventListener('pointerup', releaseJoystick);
+document.addEventListener('pointercancel', releaseJoystick);
+
+// 시점 회전 + 채굴(탭&홀드). 움직임이 작으면 채굴, 문턱을 넘으면 그 시점부터 시점 회전으로 전환.
+let lookPointerId = null, lookStartX = 0, lookStartY = 0, lookLastX = 0, lookLastY = 0, lookIsDrag = false;
+const LOOK_DRAG_THRESHOLD = 10; // px
+canvas.addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
+  e.preventDefault();
   overlay.classList.add('hidden');
-  const t = e.changedTouches[0];
-  touchId = t.identifier; lastTX = t.clientX; lastTY = t.clientY;
-}, { passive: true });
-canvas.addEventListener('touchmove', (e) => {
-  for (const t of e.changedTouches) {
-    if (t.identifier !== touchId) continue;
-    const dx = t.clientX - lastTX, dy = t.clientY - lastTY;
-    lastTX = t.clientX; lastTY = t.clientY;
-    yaw -= dx * 0.004;
-    pitch -= dy * 0.004;
+  if (lookPointerId !== null || inventoryOpen || isDead) return;
+  lookPointerId = e.pointerId;
+  lookStartX = lookLastX = e.clientX;
+  lookStartY = lookLastY = e.clientY;
+  lookIsDrag = false;
+  isMining = true; miningProgress = 0; // 움직이지 않고 있으면 채굴로 취급(데스크탑 홀드와 동일)
+});
+document.addEventListener('pointermove', (e) => {
+  if (e.pointerId !== lookPointerId) return;
+  const dx = e.clientX - lookLastX, dy = e.clientY - lookLastY;
+  lookLastX = e.clientX; lookLastY = e.clientY;
+  if (!lookIsDrag && Math.hypot(e.clientX - lookStartX, e.clientY - lookStartY) > LOOK_DRAG_THRESHOLD) {
+    lookIsDrag = true; // 문턱을 넘는 순간 채굴은 취소하고 시점 회전으로 전환
+    isMining = false; miningProgress = 0;
+  }
+  if (lookIsDrag) {
+    const sensitivity = 0.004;
+    yaw -= dx * sensitivity;
+    pitch -= dy * sensitivity;
     pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitch));
   }
-}, { passive: true });
-canvas.addEventListener('touchend', (e) => {
-  for (const t of e.changedTouches) if (t.identifier === touchId) touchId = null;
-}, { passive: true });
+});
+function releaseLook(e) {
+  if (e.pointerId !== lookPointerId) return;
+  lookPointerId = null;
+  isMining = false; miningProgress = 0;
+}
+document.addEventListener('pointerup', releaseLook);
+document.addEventListener('pointercancel', releaseLook);
+
+// 설치/섭취 버튼: 데스크탑 우클릭과 동일한 분기(음식이면 섭취, 아니면 설치)
+document.getElementById('place-button').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  if (inventoryOpen || isDead) return;
+  if (!tryEat()) tryPlace();
+});
+// 인벤토리 열기/닫기 버튼 (데스크탑 E 키와 동일)
+document.getElementById('inventory-toggle-button').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  if (isDead) return;
+  setInventoryOpen(!inventoryOpen);
+});
 
 // ---------- 생존 지표: 체력 / 배고픔 ----------
 const MAX_HEALTH = 100, MAX_HUNGER = 100;
@@ -1169,6 +1289,10 @@ function animate() {
   if (keys.has('KeyA')) move.sub(right);
   if (keys.has('Space')) move.y += 1;
   if (keys.has('ShiftLeft') || keys.has('ShiftRight')) move.y -= 1;
+  if (Math.abs(joyX) > 0.001 || Math.abs(joyY) > 0.001) {
+    move.add(forward.clone().multiplyScalar(-joyY)); // 조이스틱을 위로 밀면(joyY<0) 전진
+    move.add(right.clone().multiplyScalar(joyX));
+  }
   if (move.lengthSq() > 0 && !isDead) {
     move.normalize().multiplyScalar(MOVE_SPEED * dt);
     moveWithCollision(move.x, move.y, move.z);
