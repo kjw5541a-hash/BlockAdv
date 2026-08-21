@@ -8,7 +8,15 @@
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='6' fill='%235a9c3f'/%3E%3Crect y='6' width='16' height='10' fill='%238a6a45'/%3E%3C/svg%3E">
 <style>
-  html, body { margin: 0; padding: 0; overflow: hidden; width: 100%; height: 100%; background: #000; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  html, body {
+    margin: 0; padding: 0; overflow: hidden; width: 100%; height: 100%; background: #000;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    touch-action: none; overscroll-behavior: none;
+  }
+  /* 모바일 롱프레스 시 텍스트 선택/돋보기/공유메뉴가 뜨고 확대된 채 안 돌아오는 문제 방지.
+     인풋(렌더 거리 슬라이더)만 예외로 되돌려서 슬라이더 조작은 정상 동작하게 둔다. */
+  * { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+  input, label { -webkit-user-select: auto; user-select: auto; touch-action: auto; }
   canvas { display: block; touch-action: none; }
   #hud {
     position: fixed; top: 8px; left: 8px; color: #fff; font-size: 12px;
@@ -1175,9 +1183,15 @@ function releaseJoystick(e) {
 document.addEventListener('pointerup', releaseJoystick);
 document.addEventListener('pointercancel', releaseJoystick);
 
-// 시점 회전 + 채굴(탭&홀드). 움직임이 작으면 채굴, 문턱을 넘으면 그 시점부터 시점 회전으로 전환.
-let lookPointerId = null, lookStartX = 0, lookStartY = 0, lookLastX = 0, lookLastY = 0, lookIsDrag = false;
+// 시점 회전 + 채굴(탭&홀드). 마인크래프트 모바일처럼, 손을 대자마자 바로 채굴을 시작하지
+// 않고 짧은 "확정 대기" 시간을 둔다 - 그 사이에 손가락이 움직이면 시점 회전으로 확정하고,
+// 안 움직인 채로 대기 시간이 지나야 그때부터 채굴이 시작된다. 이 대기가 없으면 시점을
+// 돌리려고 화면을 짚은 순간 바로 앞에 있는 블록(특히 즉시 채굴되는 흙/잔디류)이 프레임
+// 하나 만에 캐져버린다 - 사람이 손가락을 움직이기도 전에 채굴이 끝나버리기 때문.
+let lookPointerId = null, lookStartX = 0, lookStartY = 0, lookLastX = 0, lookLastY = 0;
+let lookIsDrag = false, lookMiningArmed = false, lookStartTime = 0;
 const LOOK_DRAG_THRESHOLD = 10; // px
+const MINE_COMMIT_DELAY = 120;  // ms - 이 시간 동안 안 움직이고 있어야 채굴 시작
 canvas.addEventListener('pointerdown', (e) => {
   if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
   e.preventDefault();
@@ -1186,15 +1200,16 @@ canvas.addEventListener('pointerdown', (e) => {
   lookPointerId = e.pointerId;
   lookStartX = lookLastX = e.clientX;
   lookStartY = lookLastY = e.clientY;
+  lookStartTime = performance.now();
   lookIsDrag = false;
-  isMining = true; miningProgress = 0; // 움직이지 않고 있으면 채굴로 취급(데스크탑 홀드와 동일)
+  lookMiningArmed = false; // 채굴은 아직 시작 안 함 - 확정 대기 시간 이후 animate()에서 시작
 });
 document.addEventListener('pointermove', (e) => {
   if (e.pointerId !== lookPointerId) return;
   const dx = e.clientX - lookLastX, dy = e.clientY - lookLastY;
   lookLastX = e.clientX; lookLastY = e.clientY;
   if (!lookIsDrag && Math.hypot(e.clientX - lookStartX, e.clientY - lookStartY) > LOOK_DRAG_THRESHOLD) {
-    lookIsDrag = true; // 문턱을 넘는 순간 채굴은 취소하고 시점 회전으로 전환
+    lookIsDrag = true; // 문턱을 넘는 순간 채굴은 취소(또는 시작 자체를 막음)하고 시점 회전으로 전환
     isMining = false; miningProgress = 0;
   }
   if (lookIsDrag) {
@@ -1207,10 +1222,20 @@ document.addEventListener('pointermove', (e) => {
 function releaseLook(e) {
   if (e.pointerId !== lookPointerId) return;
   lookPointerId = null;
+  lookMiningArmed = false;
   isMining = false; miningProgress = 0;
 }
 document.addEventListener('pointerup', releaseLook);
 document.addEventListener('pointercancel', releaseLook);
+// 확정 대기 시간이 지나도록 손가락을 움직이지 않았으면 그제서야 채굴을 시작한다
+// (animate() 루프에서 매 프레임 확인 - 짧은 지연이라 별도 타이머 없이 프레임 체크로 충분).
+function updateTouchMineArming() {
+  if (lookPointerId === null || lookIsDrag || lookMiningArmed || inventoryOpen || isDead) return;
+  if (performance.now() - lookStartTime >= MINE_COMMIT_DELAY) {
+    lookMiningArmed = true;
+    isMining = true; miningProgress = 0;
+  }
+}
 
 // 설치/섭취 버튼: 데스크탑 우클릭과 동일한 분기(음식이면 섭취, 아니면 설치)
 document.getElementById('place-button').addEventListener('pointerdown', (e) => {
@@ -1414,6 +1439,7 @@ function animate() {
   world.processQueue();
   updateVitals(dt);
 
+  updateTouchMineArming();
   if (!inventoryOpen && !isDead) updateTarget(); else { currentTarget = null; highlightBox.visible = false; }
   const targetKey = currentTarget ? `${currentTarget.x},${currentTarget.y},${currentTarget.z}` : null;
   if (targetKey !== lastTargetKey) { miningProgress = 0; lastTargetKey = targetKey; }
