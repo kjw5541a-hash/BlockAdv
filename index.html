@@ -268,13 +268,15 @@ const BLOCK = {
   AIR: 0, GRASS: 1, DIRT: 2, STONE: 3, SAND: 4,
   LOG: 5, PLANKS: 6, LEAVES: 7, STICK: 8, CRAFTING_TABLE: 9, APPLE: 10,
   COAL_ORE: 11, IRON_ORE: 12,
+  WOOD_PICKAXE: 13, STONE_PICKAXE: 14, IRON_PICKAXE: 15,
 };
-const ATLAS_COLS = 5, ATLAS_ROWS = 3, TILE_PX = 16;
+const ATLAS_COLS = 5, ATLAS_ROWS = 4, TILE_PX = 16;
 const TILE = {
   GRASS_TOP: 0, GRASS_SIDE: 1, DIRT: 2, STONE: 3,
   SAND: 4, LOG_TOP: 5, LOG_SIDE: 6, PLANKS: 7,
   LEAVES: 8, CRAFT_TOP: 9, CRAFT_SIDE: 10, STICK_ICON: 11, APPLE_ICON: 12,
   COAL_ORE: 13, IRON_ORE: 14,
+  WOOD_PICKAXE_ICON: 15, STONE_PICKAXE_ICON: 16, IRON_PICKAXE_ICON: 17,
 };
 // 블록별 [top, bottom, side] 타일 인덱스 (설치 가능한 블록만 등록)
 const BLOCK_TILES = {
@@ -294,21 +296,32 @@ const ITEM_ICON_TILE = {
   ...Object.fromEntries(Object.entries(BLOCK_TILES).map(([id, t]) => [id, t[0]])),
   [BLOCK.STICK]: TILE.STICK_ICON,
   [BLOCK.APPLE]: TILE.APPLE_ICON,
+  [BLOCK.WOOD_PICKAXE]: TILE.WOOD_PICKAXE_ICON,
+  [BLOCK.STONE_PICKAXE]: TILE.STONE_PICKAXE_ICON,
+  [BLOCK.IRON_PICKAXE]: TILE.IRON_PICKAXE_ICON,
 };
 // 배고픔을 채워주는 음식 아이템과 회복량
 const FOOD_VALUE = { [BLOCK.APPLE]: 20 };
 const LEAVES_APPLE_DROP_CHANCE = 0.15; // 나뭇잎 채굴 시 사과가 추가로 나올 확률
-// 블록별 채굴 소요 시간(초). 0 = 즉시 채굴. (도구별 채굴속도 보정은 다음 단계에서 추가 예정)
+// 블록별 채굴 소요 시간(초). 0 = 즉시 채굴. 곡괭이를 들고 있으면 PICKAXE_BLOCKS에 한해
+// TIER_SPEED_MULT만큼 더 빨라진다(도구 없이 캐던 기존 시간은 그대로 유지됨).
 const BLOCK_HARDNESS = {
   [BLOCK.GRASS]: 0, [BLOCK.DIRT]: 0, [BLOCK.SAND]: 0, [BLOCK.LEAVES]: 0,
   [BLOCK.LOG]: 0.3, [BLOCK.PLANKS]: 0.3, [BLOCK.CRAFTING_TABLE]: 0.3,
   [BLOCK.STONE]: 0.6, [BLOCK.COAL_ORE]: 0.7, [BLOCK.IRON_ORE]: 0.9,
 };
+// 곡괭이로 캘 때 채굴속도가 빨라지는 블록(돌 계열). 도구 등급별 배속.
+const PICKAXE_BLOCKS = new Set([BLOCK.STONE, BLOCK.COAL_ORE, BLOCK.IRON_ORE]);
+const TOOL_TIER = {
+  [BLOCK.WOOD_PICKAXE]: 1, [BLOCK.STONE_PICKAXE]: 2, [BLOCK.IRON_PICKAXE]: 3,
+};
+const TIER_SPEED_MULT = { 0: 1, 1: 2, 2: 4, 3: 6 };
 const BLOCK_NAME_KO = {
   [BLOCK.GRASS]: '잔디', [BLOCK.DIRT]: '흙', [BLOCK.STONE]: '돌', [BLOCK.SAND]: '모래',
   [BLOCK.LOG]: '통나무', [BLOCK.PLANKS]: '판자', [BLOCK.LEAVES]: '나뭇잎',
   [BLOCK.STICK]: '막대기', [BLOCK.CRAFTING_TABLE]: '작업대', [BLOCK.APPLE]: '사과',
   [BLOCK.COAL_ORE]: '석탄 광석', [BLOCK.IRON_ORE]: '철 광석',
+  [BLOCK.WOOD_PICKAXE]: '나무 곡괭이', [BLOCK.STONE_PICKAXE]: '돌 곡괭이', [BLOCK.IRON_PICKAXE]: '철 곡괭이',
 };
 
 // ---------- 절차적 픽셀아트풍 텍스처 아틀라스 생성 ----------
@@ -414,6 +427,31 @@ function makeAtlasTexture() {
       }
     }
     for (let y = 2; y < 5; y++) px(cx, cy, 7, y, shade('#6e5232', -10));
+  }
+  // 곡괭이 아이콘 3종: 막대기와 같은 대각선 손잡이 + 윗부분에 재질별 색상의 'ㅅ'자
+  // 곡괭이 머리를 얹어서 등급을 구분한다. 배경은 투명.
+  {
+    const drawPickaxe = (tileIdx, headColor) => {
+      const cx = tileIdx % ATLAS_COLS, cy = Math.floor(tileIdx / ATLAS_COLS);
+      // 손잡이: 좌하단 -> 우상단 대각선 막대
+      for (let i = 4; i < TILE_PX - 2; i++) {
+        const amt = Math.floor((rand() - 0.5) * 16);
+        px(cx, cy, i - 2, i, shade('#8a6238', amt));
+      }
+      // 곡괭이 머리: 손잡이 위쪽 끝을 가로지르는 'ㅅ'자 모양
+      const headPixels = [
+        [2, 3], [3, 2], [4, 2], [5, 3],
+        [6, 4], [7, 5], [8, 6], [9, 5], [10, 4],
+        [11, 3], [12, 2], [13, 2], [14, 3],
+      ];
+      for (const [x, y] of headPixels) {
+        const amt = Math.floor((rand() - 0.5) * 16);
+        px(cx, cy, x, y, shade(headColor, amt));
+      }
+    };
+    drawPickaxe(TILE.WOOD_PICKAXE_ICON, '#a9814f');
+    drawPickaxe(TILE.STONE_PICKAXE_ICON, '#8a8a8f');
+    drawPickaxe(TILE.IRON_PICKAXE_ICON, '#d8d8e2');
   }
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -959,6 +997,11 @@ const RECIPES = [
   { ingredients: [{ id: BLOCK.LOG, count: 1 }], output: { id: BLOCK.PLANKS, count: 4 } },
   { ingredients: [{ id: BLOCK.PLANKS, count: 2 }], output: { id: BLOCK.STICK, count: 4 } },
   { ingredients: [{ id: BLOCK.PLANKS, count: 4 }], output: { id: BLOCK.CRAFTING_TABLE, count: 1 } },
+  // 도구/장비: 곡괭이 3종. 아직 제련(용광로) 시스템이 없어서 철 곡괭이는 철 광석 원석을
+  // 바로 사용한다(잉곳 정제 단계는 생략).
+  { ingredients: [{ id: BLOCK.PLANKS, count: 3 }, { id: BLOCK.STICK, count: 2 }], output: { id: BLOCK.WOOD_PICKAXE, count: 1 } },
+  { ingredients: [{ id: BLOCK.STONE, count: 3 }, { id: BLOCK.STICK, count: 2 }], output: { id: BLOCK.STONE_PICKAXE, count: 1 } },
+  { ingredients: [{ id: BLOCK.IRON_ORE, count: 3 }, { id: BLOCK.STICK, count: 2 }], output: { id: BLOCK.IRON_PICKAXE, count: 1 } },
 ];
 // 제작 그리드(36~44)의 내용물을 보고 레시피 매칭 + 결과 슬롯 갱신. 그리드에 레시피와
 // 무관한 재료가 섞여 있으면(정확히 일치하지 않으면) 매칭 실패로 처리한다.
@@ -1643,7 +1686,10 @@ function animate() {
   if (targetKey !== lastTargetKey) { miningProgress = 0; lastTargetKey = targetKey; }
   if (isMining && currentTarget && !inventoryOpen && !isDead) {
     const blockId = world.getBlockWorld(currentTarget.x, currentTarget.y, currentTarget.z);
-    const hardness = BLOCK_HARDNESS[blockId] ?? 0;
+    const heldTool = slots[selectedHotbar];
+    const toolTier = heldTool ? (TOOL_TIER[heldTool.id] || 0) : 0;
+    const speedMult = PICKAXE_BLOCKS.has(blockId) ? (TIER_SPEED_MULT[toolTier] ?? 1) : 1;
+    const hardness = (BLOCK_HARDNESS[blockId] ?? 0) / speedMult;
     miningProgress += dt;
     if (miningProgress >= hardness) {
       world.setBlockWorld(currentTarget.x, currentTarget.y, currentTarget.z, BLOCK.AIR);
