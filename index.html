@@ -469,7 +469,7 @@ class Chunk {
   }
 
   // 청크당 메시 1개: 노출된 면만 모아 BufferGeometry 하나로 병합 (face culling)
-  buildMesh(atlasTexture, getNeighborBlock) {
+  buildMesh(sharedMaterial, getNeighborBlock) {
     const positions = [], normals = [], uvs = [];
     const uvStep = 1 / ATLAS_COLS; // (cols === rows 이므로 동일 step 사용)
     const vStep = 1 / ATLAS_ROWS;
@@ -502,27 +502,31 @@ class Chunk {
       }
     }
 
+    // 이웃 판정 (청크 경계는 getNeighborBlock 콜백으로 실제 이웃 청크 조회). buildMesh 호출당
+    // 한 번만 만든다 - 예전엔 이 클로저를 복셀마다(청크당 최대 16384번) 새로 만들어서
+    // 메싱할 때마다 불필요한 가비지가 많이 생겼었다(9단계 성능 패스에서 정리).
+    const self = this;
+    function neighborSolid(x, y, z, dx, dy, dz) {
+      const nx = x + dx, ny = y + dy, nz = z + dz;
+      if (nx >= 0 && nx < CHUNK_X && ny >= 0 && ny < CHUNK_Y && nz >= 0 && nz < CHUNK_Z) {
+        return self.get(nx, ny, nz) !== BLOCK.AIR;
+      }
+      if (ny < 0 || ny >= CHUNK_Y) return false;
+      return getNeighborBlock(self.cx * CHUNK_X + nx, ny, self.cz * CHUNK_Z + nz) !== BLOCK.AIR;
+    }
+
     for (let x = 0; x < CHUNK_X; x++) {
       for (let y = 0; y < CHUNK_Y; y++) {
         for (let z = 0; z < CHUNK_Z; z++) {
           const b = this.get(x, y, z);
           if (b === BLOCK.AIR) continue;
           const tiles = BLOCK_TILES[b];
-          // 이웃 판정 (청크 경계는 getNeighborBlock 콜백으로 실제 이웃 청크 조회)
-          const neighborSolid = (dx, dy, dz) => {
-            const nx = x + dx, ny = y + dy, nz = z + dz;
-            if (nx >= 0 && nx < CHUNK_X && ny >= 0 && ny < CHUNK_Y && nz >= 0 && nz < CHUNK_Z) {
-              return this.get(nx, ny, nz) !== BLOCK.AIR;
-            }
-            if (ny < 0 || ny >= CHUNK_Y) return false;
-            return getNeighborBlock(this.cx * CHUNK_X + nx, ny, this.cz * CHUNK_Z + nz) !== BLOCK.AIR;
-          };
-          if (!neighborSolid(0, 1, 0)) addFace(x, y, z, 'top', tiles[0]);
-          if (!neighborSolid(0, -1, 0)) addFace(x, y, z, 'bottom', tiles[1]);
-          if (!neighborSolid(0, 0, -1)) addFace(x, y, z, 'north', tiles[2]);
-          if (!neighborSolid(0, 0, 1)) addFace(x, y, z, 'south', tiles[2]);
-          if (!neighborSolid(-1, 0, 0)) addFace(x, y, z, 'west', tiles[2]);
-          if (!neighborSolid(1, 0, 0)) addFace(x, y, z, 'east', tiles[2]);
+          if (!neighborSolid(x, y, z, 0, 1, 0)) addFace(x, y, z, 'top', tiles[0]);
+          if (!neighborSolid(x, y, z, 0, -1, 0)) addFace(x, y, z, 'bottom', tiles[1]);
+          if (!neighborSolid(x, y, z, 0, 0, -1)) addFace(x, y, z, 'north', tiles[2]);
+          if (!neighborSolid(x, y, z, 0, 0, 1)) addFace(x, y, z, 'south', tiles[2]);
+          if (!neighborSolid(x, y, z, -1, 0, 0)) addFace(x, y, z, 'west', tiles[2]);
+          if (!neighborSolid(x, y, z, 1, 0, 0)) addFace(x, y, z, 'east', tiles[2]);
         }
       }
     }
@@ -532,8 +536,10 @@ class Chunk {
     geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
 
-    const mat = new THREE.MeshLambertMaterial({ map: atlasTexture });
-    const mesh = new THREE.Mesh(geo, mat);
+    // 모든 청크가 완전히 같은 재질(같은 아틀라스)을 쓰므로 청크마다 새로 만들지 않고
+    // World가 만들어둔 걸 하나 공유해서 쓴다(채굴/설치로 리메싱될 때마다 재질 객체를
+    // 새로 찍어내는 낭비를 없앰).
+    const mesh = new THREE.Mesh(geo, sharedMaterial);
     mesh.position.set(this.cx * CHUNK_X, 0, this.cz * CHUNK_Z);
     this.mesh = mesh;
     return mesh;
@@ -542,7 +548,7 @@ class Chunk {
   dispose() {
     if (this.mesh) {
       this.mesh.geometry.dispose();
-      this.mesh.material.dispose();
+      // material은 모든 청크가 공유하는 객체라 청크 하나 지운다고 같이 dispose하면 안 됨.
       this.mesh = null;
     }
   }
@@ -584,7 +590,8 @@ function raycastVoxels(ox, oy, oz, dx, dy, dz, maxDist, isSolid) {
 class DynamicWorld {
   constructor(scene, atlasTexture, seed, radiusInChunks) {
     this.scene = scene;
-    this.atlasTexture = atlasTexture;
+    // 모든 청크 메시가 공유하는 재질 하나만 만든다 (리메싱마다 새로 만들지 않음)
+    this.material = new THREE.MeshLambertMaterial({ map: atlasTexture });
     this.noise = new ValueNoise2D(seed);
     this.chunks = new Map();      // key -> Chunk (블록 데이터는 있지만 메시는 아직 없을 수 있음)
     this.meshQueue = [];          // 메싱 대기열 (프레임당 1개씩 처리)
@@ -665,7 +672,7 @@ class DynamicWorld {
     const chunk = this.chunks.get(key);
     if (!chunk) return;
     if (chunk.mesh) { this.scene.remove(chunk.mesh); chunk.dispose(); }
-    const mesh = chunk.buildMesh(this.atlasTexture, (wx, y, wz) => this.getBlockWorld(wx, y, wz));
+    const mesh = chunk.buildMesh(this.material, (wx, y, wz) => this.getBlockWorld(wx, y, wz));
     this.scene.add(mesh);
   }
 
@@ -1014,11 +1021,14 @@ let currentTarget = null; // raycastVoxels 결과
 let miningProgress = 0;   // 0~1
 let isMining = false;
 
+// 매 프레임 호출되는 함수라 THREE.Vector3/클로저를 매번 새로 만들지 않고 재사용한다
+// (9단계 성능 패스: GC 압박 줄이기).
+const _rayDir = new THREE.Vector3();
+function isSolidForRay(x, y, z) { return world.getBlockWorld(x, y, z) !== BLOCK.AIR; }
 function updateTarget() {
-  const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+  _rayDir.set(0, 0, -1).applyQuaternion(camera.quaternion);
   const o = camera.position;
-  const result = raycastVoxels(o.x, o.y, o.z, dir.x, dir.y, dir.z, REACH,
-    (x, y, z) => world.getBlockWorld(x, y, z) !== BLOCK.AIR);
+  const result = raycastVoxels(o.x, o.y, o.z, _rayDir.x, _rayDir.y, _rayDir.z, REACH, isSolidForRay);
   currentTarget = result.hit ? result : null;
   if (currentTarget) {
     highlightBox.position.set(currentTarget.x + 0.5, currentTarget.y + 0.5, currentTarget.z + 0.5);
@@ -1406,6 +1416,12 @@ let lastTime = performance.now();
 let fpsSmoothed = 60;
 let lastTargetKey = null;
 
+// 매 프레임 새로 만들지 않고 재사용하는 스크래치 객체들 (9단계 성능 패스: GC 압박 줄이기)
+const _euler = new THREE.Euler(0, 0, 0, 'YXZ');
+const _forward = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const _move = new THREE.Vector3();
+
 function animate() {
   requestAnimationFrame(animate);
   const now = performance.now();
@@ -1417,22 +1433,26 @@ function animate() {
   camera.rotateY(yaw);
   camera.rotateX(pitch);
 
-  const forward = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
-  const right = new THREE.Vector3(1, 0, 0).applyEuler(new THREE.Euler(0, yaw, 0, 'YXZ'));
-  const move = new THREE.Vector3();
-  if (keys.has('KeyW')) move.add(forward);
-  if (keys.has('KeyS')) move.sub(forward);
-  if (keys.has('KeyD')) move.add(right);
-  if (keys.has('KeyA')) move.sub(right);
-  if (keys.has('Space')) move.y += 1;
-  if (keys.has('ShiftLeft') || keys.has('ShiftRight')) move.y -= 1;
+  _euler.set(pitch, yaw, 0);
+  _forward.set(0, 0, -1).applyEuler(_euler);
+  _euler.set(0, yaw, 0);
+  _right.set(1, 0, 0).applyEuler(_euler);
+  _move.set(0, 0, 0);
+  if (keys.has('KeyW')) _move.add(_forward);
+  if (keys.has('KeyS')) _move.sub(_forward);
+  if (keys.has('KeyD')) _move.add(_right);
+  if (keys.has('KeyA')) _move.sub(_right);
+  if (keys.has('Space')) _move.y += 1;
+  if (keys.has('ShiftLeft') || keys.has('ShiftRight')) _move.y -= 1;
   if (Math.abs(joyX) > 0.001 || Math.abs(joyY) > 0.001) {
-    move.add(forward.clone().multiplyScalar(-joyY)); // 조이스틱을 위로 밀면(joyY<0) 전진
-    move.add(right.clone().multiplyScalar(joyX));
+    // 조이스틱을 위로 밀면(joyY<0) 전진
+    _move.x += _forward.x * -joyY + _right.x * joyX;
+    _move.y += _forward.y * -joyY + _right.y * joyX;
+    _move.z += _forward.z * -joyY + _right.z * joyX;
   }
-  if (move.lengthSq() > 0 && !isDead) {
-    move.normalize().multiplyScalar(MOVE_SPEED * dt);
-    moveWithCollision(move.x, move.y, move.z);
+  if (_move.lengthSq() > 0 && !isDead) {
+    _move.normalize().multiplyScalar(MOVE_SPEED * dt);
+    moveWithCollision(_move.x, _move.y, _move.z);
   }
 
   world.update(camera.position.x, camera.position.z);
