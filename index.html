@@ -391,15 +391,17 @@ class Chunk {
     for (let x = 2; x < CHUNK_X - 2; x++) {
       for (let z = 2; z < CHUNK_Z - 2; z++) {
         const height = heights[x * CHUNK_Z + z];
-        if (height > baseHeight - 6 && hash01(this.cx * CHUNK_X + x, this.cz * CHUNK_Z + z, 918273645) < 0.015) {
-          this.placeTree(x, height, z);
+        const wx = this.cx * CHUNK_X + x, wz = this.cz * CHUNK_Z + z;
+        if (height > baseHeight - 6 && hash01(wx, wz, 918273645) < 0.015) {
+          // 나무마다 몸통 높이를 4~7칸 사이로 다르게 줘서 숲이 밋밋해 보이지 않게 함
+          const trunkHeight = 4 + Math.floor(hash01(wx, wz, 55814327) * 4);
+          this.placeTree(x, height, z, trunkHeight);
         }
       }
     }
   }
 
-  placeTree(x, groundY, z) {
-    const trunkHeight = 4;
+  placeTree(x, groundY, z, trunkHeight) {
     const top = groundY + trunkHeight;
     for (let dy = 1; dy <= trunkHeight; dy++) this.set(x, groundY + dy, z, BLOCK.LOG);
     for (let ly = top - 2; ly <= top - 1; ly++) {
