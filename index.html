@@ -1125,7 +1125,15 @@ sun.shadow.camera.top = 44; sun.shadow.camera.bottom = -44;
 // three.js가 렌더 시점에 알아서 갱신해주긴 하지만, left/right/top/bottom을 바꾼 뒤
 // 명시적으로 한 번 불러주는 게 안전하다(다른 엔진/버전에서는 자동 갱신을 보장 안 함).
 sun.shadow.camera.updateProjectionMatrix();
-sun.shadow.bias = -0.0015;
+// peter-panning(그림자가 물체 밑동에서 살짝 떨어져 보이는 밝은 틈) 방지: 기존
+// bias(-0.0015)가 너무 세게 걸려있어서, 턱진 지형 블록 밑동과 그 그림자 사이에
+// 지형과 무관해 보이는 밝은 선이 실제로 생겼다(실기기에서 신고된 버그, 재현 확인함).
+// depth bias는 절댓값을 확 줄이고, 대신 표면 법선 방향으로 판정 위치를 밀어주는
+// normalBias를 추가해서(평평한 면 자기그림자 방지에 더 안전한 방식) 역할을 나눴다 -
+// 그 결과로 acne(저각 태양에서의 들쭉날쭉한 얼룩)가 되살아나지도 않는지 저각 태양
+// 조건에서 재확인했음.
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.02;
 scene.add(sun);
 sun.target = new THREE.Object3D();
 scene.add(sun.target);
