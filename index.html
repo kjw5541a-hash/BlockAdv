@@ -179,8 +179,9 @@
 <div id="overlay">
   <h1>BlockAdv</h1>
   <p id="overlay-msg">클릭(또는 탭)해서 시작 &mdash; WASD 이동, 마우스로 시점 회전, Space/Shift로 위아래 이동</p>
-  <p>데스크탑: 좌클릭 채굴(홀드) / 우클릭 설치·섭취 / 숫자키 1~9 핫바 / E 인벤토리</p>
-  <p>모바일: 좌하단 조이스틱 이동 / 화면 드래그 시점 회전 / 화면 탭(홀드) 채굴 / 우측 버튼 설치·섭취·인벤토리</p>
+  <p>데스크탑: 좌클릭 채굴/공격(홀드) / 우클릭 설치·섭취 / 숫자키 1~9 핫바 / E 인벤토리</p>
+  <p>모바일: 좌하단 조이스틱 이동 / 화면 드래그 시점 회전 / 화면 탭(홀드) 채굴·공격 / 우측 버튼 설치·섭취·인벤토리</p>
+  <p style="opacity:0.5; font-size:12px;">밤이 되면 좀비가 나타납니다 - 검을 조준하고 홀드하면 공격, 처치하면 썩은 살점을 드롭합니다.</p>
   <p style="opacity:0.5; font-size:12px;">8단계 검증 빌드: 저장/불러오기. 5초마다 자동 저장되고, 새로고침하면 캐낸/설치한 블록·인벤토리·체력/배고픔·위치가 그대로 복원됩니다.</p>
   <div id="render-distance">
     <label for="render-distance-slider">렌더 거리 (반경 <span id="render-distance-value">4</span>청크)</label>
@@ -346,8 +347,9 @@ const BLOCK = {
   WOOD_SHOVEL: 19, STONE_SHOVEL: 20, IRON_SHOVEL: 21,
   FURNACE: 22, IRON_INGOT: 23,
   SNOW: 24, WATER: 25,
+  WOOD_SWORD: 26, STONE_SWORD: 27, IRON_SWORD: 28, ROTTEN_FLESH: 29,
 };
-const ATLAS_COLS = 5, ATLAS_ROWS = 6, TILE_PX = 16;
+const ATLAS_COLS = 5, ATLAS_ROWS = 7, TILE_PX = 16;
 const TILE = {
   GRASS_TOP: 0, GRASS_SIDE: 1, DIRT: 2, STONE: 3,
   SAND: 4, LOG_TOP: 5, LOG_SIDE: 6, PLANKS: 7,
@@ -358,6 +360,7 @@ const TILE = {
   WOOD_SHOVEL_ICON: 21, STONE_SHOVEL_ICON: 22, IRON_SHOVEL_ICON: 23,
   FURNACE_TOP: 24, FURNACE_SIDE: 25, IRON_INGOT_ICON: 26,
   SNOW_TOP: 27, SNOW_SIDE: 28, WATER: 29,
+  WOOD_SWORD_ICON: 30, STONE_SWORD_ICON: 31, IRON_SWORD_ICON: 32, ROTTEN_FLESH_ICON: 33,
 };
 // 블록별 [top, bottom, side] 타일 인덱스 (설치 가능한 블록만 등록)
 const BLOCK_TILES = {
@@ -390,6 +393,10 @@ const ITEM_ICON_TILE = {
   [BLOCK.STONE_SHOVEL]: TILE.STONE_SHOVEL_ICON,
   [BLOCK.IRON_SHOVEL]: TILE.IRON_SHOVEL_ICON,
   [BLOCK.IRON_INGOT]: TILE.IRON_INGOT_ICON,
+  [BLOCK.WOOD_SWORD]: TILE.WOOD_SWORD_ICON,
+  [BLOCK.STONE_SWORD]: TILE.STONE_SWORD_ICON,
+  [BLOCK.IRON_SWORD]: TILE.IRON_SWORD_ICON,
+  [BLOCK.ROTTEN_FLESH]: TILE.ROTTEN_FLESH_ICON,
 };
 // 배고픔을 채워주는 음식 아이템과 회복량
 const FOOD_VALUE = { [BLOCK.APPLE]: 20 };
@@ -422,6 +429,9 @@ const TOOL_TIER = {
   [BLOCK.WOOD_SHOVEL]: 1, [BLOCK.STONE_SHOVEL]: 2, [BLOCK.IRON_SHOVEL]: 3,
 };
 const TIER_SPEED_MULT = { 0: 1, 1: 2, 2: 4, 3: 6 };
+// 검은 채굴 배속과 무관하게 전투 전용 - 몹 공격 데미지만 재질별로 다르게 정의한다.
+const HAND_DAMAGE = 8; // 맨손으로 공격할 때 데미지
+const SWORD_DAMAGE = { [BLOCK.WOOD_SWORD]: 15, [BLOCK.STONE_SWORD]: 24, [BLOCK.IRON_SWORD]: 34 };
 const BLOCK_NAME_KO = {
   [BLOCK.GRASS]: '잔디', [BLOCK.DIRT]: '흙', [BLOCK.STONE]: '돌', [BLOCK.SAND]: '모래',
   [BLOCK.LOG]: '통나무', [BLOCK.PLANKS]: '판자', [BLOCK.LEAVES]: '나뭇잎',
@@ -432,6 +442,8 @@ const BLOCK_NAME_KO = {
   [BLOCK.WOOD_SHOVEL]: '나무 삽', [BLOCK.STONE_SHOVEL]: '돌 삽', [BLOCK.IRON_SHOVEL]: '철 삽',
   [BLOCK.FURNACE]: '용광로', [BLOCK.IRON_INGOT]: '철 주괴',
   [BLOCK.SNOW]: '눈', [BLOCK.WATER]: '물',
+  [BLOCK.WOOD_SWORD]: '나무 검', [BLOCK.STONE_SWORD]: '돌 검', [BLOCK.IRON_SWORD]: '철 검',
+  [BLOCK.ROTTEN_FLESH]: '썩은 살점',
 };
 // 물은 시각적으로는 꽉 찬 블록이지만(반투명 렌더링 없이 단순하게), 충돌/레이캐스트에서는
 // 공기처럼 취급해서 수영 로직 없이도 그냥 통과할 수 있게 한다 - 그래서 채굴 대상으로
@@ -668,6 +680,43 @@ function makeAtlasTexture() {
   // 물: 단순하게 불투명한 청록빛 블록으로(반투명 렌더링 없이) - 수영 로직 없이 그냥
   // 통과 가능한 지형 장식용 블록이라 이 정도로 충분하다.
   fillTile(TILE.WATER, '#3d78b0', { noise: 16 });
+
+  // 검 아이콘 3종: 다른 도구처럼 인벤토리 아이콘 전용(배경 투명). 좌상단->우하단
+  // 대각선 칼날 + 십자 날밑 + 갈색 손잡이로 곡괭이/도끼/삽과 구분되는 형태.
+  {
+    const drawSword = (tileIdx, bladeColor) => {
+      const cx = tileIdx % ATLAS_COLS, cy = Math.floor(tileIdx / ATLAS_COLS);
+      for (let i = 1; i < 10; i++) {
+        const amt = Math.floor((rand() - 0.5) * 16);
+        px(cx, cy, i, i, shade(bladeColor, amt));
+        if (i > 2) px(cx, cy, i + 1, i, shade(bladeColor, amt - 8));
+      }
+      px(cx, cy, 9, 10, shade('#2c2c30', 0));
+      px(cx, cy, 10, 9, shade('#2c2c30', 0));
+      px(cx, cy, 11, 8, shade('#2c2c30', 0));
+      for (let i = 11; i < 15; i++) {
+        const amt = Math.floor((rand() - 0.5) * 12);
+        px(cx, cy, i, i, shade('#5a3d24', amt));
+      }
+    };
+    drawSword(TILE.WOOD_SWORD_ICON, '#c9a876');
+    drawSword(TILE.STONE_SWORD_ICON, '#9a9aa0');
+    drawSword(TILE.IRON_SWORD_ICON, '#e8e8f0');
+  }
+  // 좀비 처치 드롭템 아이콘: 사과와 구분되게 불규칙한 녹갈색 덩어리 모양(배경 투명)
+  {
+    const cx = TILE.ROTTEN_FLESH_ICON % ATLAS_COLS, cy = Math.floor(TILE.ROTTEN_FLESH_ICON / ATLAS_COLS);
+    const centerX = 8, centerY = 8.5, radius = 5.5;
+    for (let y = 0; y < TILE_PX; y++) {
+      for (let x = 0; x < TILE_PX; x++) {
+        const d = Math.hypot(x - centerX, y - centerY);
+        if (d <= radius + (rand() - 0.5) * 2) {
+          const amt = Math.floor((rand() - 0.5) * 30) + (rand() < 0.15 ? -40 : 0);
+          px(cx, cy, x, y, shade('#6f6438', amt));
+        }
+      }
+    }
+  }
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.magFilter = THREE.NearestFilter;
@@ -1148,13 +1197,14 @@ window.addEventListener('resize', () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// ---------- 낮/밤 주기 (조명 변화만, 몹 스폰 없음 - 기획안 원안 그대로) ----------
+// ---------- 낮/밤 주기 ----------
 function smoothstep(edge0, edge1, x) {
   const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
   return t * t * (3 - 2 * t);
 }
 const DAY_LENGTH_SEC = 300; // 낮밤 한 바퀴 = 5분 (관찰하기 좋은 속도로 임의 설정)
 let dayTime = 0.28; // 0=자정, 0.25=일출, 0.5=정오, 0.75=일몰. 아침 근처에서 시작.
+let dayFactor = 0; // updateDayNight가 매 프레임 갱신 - 좀비 스폰/디스폰 판정에도 재사용
 const NIGHT_SUN_COLOR = new THREE.Color(0x99aaff);
 const DAY_SUN_COLOR = new THREE.Color(0xffffff);
 const NIGHT_AMBIENT_COLOR = new THREE.Color(0x1c2340);
@@ -1165,7 +1215,7 @@ function updateDayNight(dt) {
   dayTime = (dayTime + dt / DAY_LENGTH_SEC) % 1;
   const angle = (dayTime - 0.25) * Math.PI * 2; // 0.25(일출)일 때 지평선, 0.5(정오)일 때 천정
   const sunHeight = Math.sin(angle);
-  const dayFactor = smoothstep(-0.25, 0.25, sunHeight); // 일출/일몰 부근에서만 부드럽게 전환
+  dayFactor = smoothstep(-0.25, 0.25, sunHeight); // 일출/일몰 부근에서만 부드럽게 전환
 
   sun.target.position.copy(camera.position);
   sun.position.set(
@@ -1263,6 +1313,131 @@ const DEFAULT_RENDER_RADIUS = 4;
 const { texture: atlasTexture, canvas: atlasCanvas } = makeAtlasTexture();
 const world = new DynamicWorld(scene, atlasTexture, 20260820, DEFAULT_RENDER_RADIUS);
 
+// ---------- 몹/전투: 좀비 (야간 스폰, 추적 + 근접 공격) ----------
+// 범위: 몹 1종(좀비)만, 지형 충돌은 정밀 판정 없이 "다음 위치의 표면이 고체인가"만
+// 확인하는 단순화된 버전(플레이어 자체가 자유비행이라 정밀한 보행 물리가 이미 없음).
+const MOB_MAX_HEALTH = 30;
+const MOB_MOVE_SPEED = 6;         // 플레이어 이동속도(18)보다 느리게 - 도망갈 여지를 둠
+const MOB_DETECT_RADIUS = 16;     // 이 거리 안이면 추적 시작
+const MOB_ATTACK_RANGE = 1.6;
+const MOB_ATTACK_COOLDOWN = 1.0;
+const MOB_ATTACK_DAMAGE = 8;
+const MOBS_MAX = 6;
+const MOB_SPAWN_INTERVAL = 4;         // 밤에 이 주기(초)마다 스폰 시도
+const MOB_SPAWN_RADIUS_MIN = 14, MOB_SPAWN_RADIUS_MAX = 28;
+const NIGHT_SPAWN_THRESHOLD = 0.15;   // dayFactor가 이보다 낮으면 "밤"으로 취급해 스폰
+const DAY_DESPAWN_THRESHOLD = 0.9;    // dayFactor가 이보다 높으면 낮이 됐다고 보고 전부 디스폰
+const PLAYER_ATTACK_COOLDOWN = 0.4;
+
+const zombieSkinMat = new THREE.MeshLambertMaterial({ color: 0x4d7a3f });
+const zombieClothMat = new THREE.MeshLambertMaterial({ color: 0x35563a });
+const ZOMBIE_LEG_H = 0.7, ZOMBIE_BODY_H = 0.7, ZOMBIE_HEAD_H = 0.4;
+const zombieLegGeo = new THREE.BoxGeometry(0.2, ZOMBIE_LEG_H, 0.2);
+const zombieBodyGeo = new THREE.BoxGeometry(0.5, ZOMBIE_BODY_H, 0.28);
+const zombieArmGeo = new THREE.BoxGeometry(0.18, 0.65, 0.18);
+const zombieHeadGeo = new THREE.BoxGeometry(0.42, ZOMBIE_HEAD_H, 0.42);
+
+// 좀비 메시는 아틀라스 UV가 필요 없는(인벤토리 아이템이 아닌) 단순 도형이라, 지형과
+// 별개로 박스 지오메트리/재질을 공유하는 Group 하나로 조립한다.
+function createZombieMesh() {
+  const group = new THREE.Group();
+  const legL = new THREE.Mesh(zombieLegGeo, zombieClothMat);
+  legL.position.set(-0.13, ZOMBIE_LEG_H / 2, 0);
+  const legR = legL.clone();
+  legR.position.x = 0.13;
+  const body = new THREE.Mesh(zombieBodyGeo, zombieSkinMat);
+  body.position.set(0, ZOMBIE_LEG_H + ZOMBIE_BODY_H / 2, 0);
+  const armL = new THREE.Mesh(zombieArmGeo, zombieSkinMat);
+  armL.position.set(-0.34, ZOMBIE_LEG_H + ZOMBIE_BODY_H - 0.32, 0);
+  const armR = armL.clone();
+  armR.position.x = 0.34;
+  const head = new THREE.Mesh(zombieHeadGeo, zombieSkinMat);
+  head.position.set(0, ZOMBIE_LEG_H + ZOMBIE_BODY_H + ZOMBIE_HEAD_H / 2, 0);
+  for (const m of [legL, legR, body, armL, armR, head]) {
+    m.castShadow = true; m.receiveShadow = true;
+    group.add(m);
+  }
+  return group;
+}
+
+// aroundY 근처에서 아래로 훑어 첫 고체 블록 바로 위(발이 닿을 y)를 찾는다.
+// 매 프레임 전체 청크 높이를 훑지 않도록 항상 "지금 위치 기준 약간 위"에서 시작한다.
+function findGroundY(wx, aroundY, wz) {
+  let y = Math.min(CHUNK_Y - 1, Math.floor(aroundY) + 3);
+  while (y > 0 && !isBlockSolid(world.getBlockWorld(wx, y, wz))) y--;
+  return y + 1;
+}
+
+const mobs = []; // { group, hp, attackTimer }
+let mobSpawnTimer = 0;
+
+function trySpawnZombie() {
+  if (mobs.length >= MOBS_MAX) return;
+  const angle = Math.random() * Math.PI * 2;
+  const dist = MOB_SPAWN_RADIUS_MIN + Math.random() * (MOB_SPAWN_RADIUS_MAX - MOB_SPAWN_RADIUS_MIN);
+  const wx = Math.floor(camera.position.x + Math.cos(angle) * dist);
+  const wz = Math.floor(camera.position.z + Math.sin(angle) * dist);
+  const groundY = findGroundY(wx, camera.position.y, wz);
+  const surfaceBlock = world.getBlockWorld(wx, groundY - 1, wz);
+  if (!isBlockSolid(surfaceBlock) || surfaceBlock === BLOCK.WATER) return; // 허공/물 위에는 스폰 안 함
+  const group = createZombieMesh();
+  group.position.set(wx + 0.5, groundY, wz + 0.5);
+  scene.add(group);
+  mobs.push({ group, hp: MOB_MAX_HEALTH, attackTimer: 0 });
+}
+
+function killMob(m) {
+  scene.remove(m.group);
+  addItem(BLOCK.ROTTEN_FLESH, 1 + Math.floor(Math.random() * 2));
+  renderSlots();
+}
+
+function updateMobs(dt) {
+  mobSpawnTimer -= dt;
+  if (dayFactor < NIGHT_SPAWN_THRESHOLD && mobSpawnTimer <= 0) {
+    mobSpawnTimer = MOB_SPAWN_INTERVAL;
+    trySpawnZombie();
+  }
+  if (dayFactor > DAY_DESPAWN_THRESHOLD && mobs.length > 0) {
+    for (const m of mobs) scene.remove(m.group);
+    mobs.length = 0;
+  }
+
+  for (let i = mobs.length - 1; i >= 0; i--) {
+    const m = mobs[i];
+    if (m.hp <= 0) { killMob(m); mobs.splice(i, 1); continue; }
+    if (m.attackTimer > 0) m.attackTimer -= dt;
+
+    const dx = camera.position.x - m.group.position.x;
+    const dz = camera.position.z - m.group.position.z;
+    const distSq = dx * dx + dz * dz;
+
+    if (distSq < MOB_ATTACK_RANGE * MOB_ATTACK_RANGE) {
+      if (m.attackTimer <= 0 && !isDead) {
+        health = Math.max(0, health - MOB_ATTACK_DAMAGE);
+        m.attackTimer = MOB_ATTACK_COOLDOWN;
+        if (health <= 0) die();
+        renderVitals();
+      }
+    } else if (distSq < MOB_DETECT_RADIUS * MOB_DETECT_RADIUS) {
+      const dist = Math.sqrt(distSq);
+      const nx = dx / dist, nz = dz / dist;
+      const nextX = m.group.position.x + nx * MOB_MOVE_SPEED * dt;
+      const nextZ = m.group.position.z + nz * MOB_MOVE_SPEED * dt;
+      const nwx = Math.floor(nextX), nwz = Math.floor(nextZ);
+      const groundY = findGroundY(nwx, m.group.position.y, nwz);
+      const surfaceBlock = world.getBlockWorld(nwx, groundY - 1, nwz);
+      // 다음 칸이 발 디딜 고체 바닥이 있을 때만 이동(허공/물로는 걸어 들어가지 않음)
+      if (isBlockSolid(surfaceBlock) && surfaceBlock !== BLOCK.WATER) {
+        m.group.position.x = nextX;
+        m.group.position.z = nextZ;
+        m.group.position.y = groundY;
+      }
+      m.group.rotation.y = Math.atan2(nx, nz);
+    }
+  }
+}
+
 // ---------- 블록 채굴/설치 ----------
 const REACH = 6; // 채굴/설치 가능 거리(블록)
 const highlightBox = new THREE.LineSegments(
@@ -1296,21 +1471,26 @@ const RECIPES = [
   { ingredients: [{ id: BLOCK.PLANKS, count: 2 }], output: { id: BLOCK.STICK, count: 4 } },
   { ingredients: [{ id: BLOCK.PLANKS, count: 4 }], output: { id: BLOCK.CRAFTING_TABLE, count: 1 } },
   { ingredients: [{ id: BLOCK.STONE, count: 8 }], output: { id: BLOCK.FURNACE, count: 1 } },
-  // 도구/장비: 재질별(나무/돌/철) 곡괭이·도끼·삽. 철 도구는 철 광석 원석이 아니라
+  // 도구/장비: 재질별(나무/돌/철) 곡괭이·도끼·삽·검. 철 도구는 철 광석 원석이 아니라
   // 용광로에서 제련한 철 주괴를 재료로 쓴다.
-  // 같은 재질 안에서 도끼(재료3+막대3) -> 곡괭이(재료3+막대2) -> 삽(재료1+막대2) 순서로
-  // 배열해야 한다: 이 크래프팅은 shapeless라 그리드 위치가 아니라 개수만 보고 매칭하는데,
-  // 재료를 더 많이 쓰는 레시피(도끼)의 조건은 적게 쓰는 레시피(곡괭이/삽)의 조건도
-  // 함께 만족해버리므로, 먼저 등장하는 레시피가 우선 매칭된다. 재료 소모량이 큰 순서로
-  // 나열해야 도끼 재료를 들고 있을 때 곡괭이나 삽으로 잘못 제작되지 않는다.
+  // 같은 재질 안에서 도끼(재료3+막대3) -> 곡괭이(재료3+막대2) -> 검(재료2+막대1) ->
+  // 삽(재료1+막대2) 순서로 배열해야 한다: 이 크래프팅은 shapeless라 그리드 위치가 아니라
+  // 개수만 보고 매칭하는데, 재료를 더 많이 쓰는 레시피(도끼/곡괭이)의 조건은 적게 쓰는
+  // 레시피(검/삽)의 조건도 함께 만족해버리므로, 먼저 등장하는 레시피가 우선 매칭된다.
+  // 검(재료2+막대1)과 삽(재료1+막대2)은 서로의 조건을 만족하지 않아(막대/재료 중 하나가
+  // 항상 모자람) 상호 배타적이라 둘 사이 순서는 상관없지만, 도끼/곡괭이보다는 반드시
+  // 뒤에 와야 도끼·곡괭이 재료를 들고 있을 때 검으로 잘못 제작되지 않는다.
   { ingredients: [{ id: BLOCK.PLANKS, count: 3 }, { id: BLOCK.STICK, count: 3 }], output: { id: BLOCK.WOOD_AXE, count: 1 } },
   { ingredients: [{ id: BLOCK.PLANKS, count: 3 }, { id: BLOCK.STICK, count: 2 }], output: { id: BLOCK.WOOD_PICKAXE, count: 1 } },
+  { ingredients: [{ id: BLOCK.PLANKS, count: 2 }, { id: BLOCK.STICK, count: 1 }], output: { id: BLOCK.WOOD_SWORD, count: 1 } },
   { ingredients: [{ id: BLOCK.PLANKS, count: 1 }, { id: BLOCK.STICK, count: 2 }], output: { id: BLOCK.WOOD_SHOVEL, count: 1 } },
   { ingredients: [{ id: BLOCK.STONE, count: 3 }, { id: BLOCK.STICK, count: 3 }], output: { id: BLOCK.STONE_AXE, count: 1 } },
   { ingredients: [{ id: BLOCK.STONE, count: 3 }, { id: BLOCK.STICK, count: 2 }], output: { id: BLOCK.STONE_PICKAXE, count: 1 } },
+  { ingredients: [{ id: BLOCK.STONE, count: 2 }, { id: BLOCK.STICK, count: 1 }], output: { id: BLOCK.STONE_SWORD, count: 1 } },
   { ingredients: [{ id: BLOCK.STONE, count: 1 }, { id: BLOCK.STICK, count: 2 }], output: { id: BLOCK.STONE_SHOVEL, count: 1 } },
   { ingredients: [{ id: BLOCK.IRON_INGOT, count: 3 }, { id: BLOCK.STICK, count: 3 }], output: { id: BLOCK.IRON_AXE, count: 1 } },
   { ingredients: [{ id: BLOCK.IRON_INGOT, count: 3 }, { id: BLOCK.STICK, count: 2 }], output: { id: BLOCK.IRON_PICKAXE, count: 1 } },
+  { ingredients: [{ id: BLOCK.IRON_INGOT, count: 2 }, { id: BLOCK.STICK, count: 1 }], output: { id: BLOCK.IRON_SWORD, count: 1 } },
   { ingredients: [{ id: BLOCK.IRON_INGOT, count: 1 }, { id: BLOCK.STICK, count: 2 }], output: { id: BLOCK.IRON_SHOVEL, count: 1 } },
 ];
 // 제작 그리드(36~44)의 내용물을 보고 레시피 매칭 + 결과 슬롯 갱신. 그리드에 레시피와
@@ -1592,24 +1772,53 @@ hotbarEl.addEventListener('pointerdown', (e) => {
   }
 });
 
-let currentTarget = null; // raycastVoxels 결과
+let currentTarget = null;    // raycastVoxels 결과(블록)
+let currentMobTarget = null; // 조준 중인 좀비({ group, hp, attackTimer }) - 블록과 배타적
 let miningProgress = 0;   // 0~1
 let isMining = false;
+let playerAttackTimer = 0; // 플레이어 공격 쿨다운(초) - 몹 공격 시 PLAYER_ATTACK_COOLDOWN으로 재설정
 
 // 매 프레임 호출되는 함수라 THREE.Vector3/클로저를 매번 새로 만들지 않고 재사용한다
 // (9단계 성능 패스: GC 압박 줄이기).
 const _rayDir = new THREE.Vector3();
+const _mobRaycaster = new THREE.Raycaster();
 function isSolidForRay(x, y, z) { return isBlockSolid(world.getBlockWorld(x, y, z)); }
 function updateTarget() {
   _rayDir.set(0, 0, -1).applyQuaternion(camera.quaternion);
   const o = camera.position;
   const result = raycastVoxels(o.x, o.y, o.z, _rayDir.x, _rayDir.y, _rayDir.z, REACH, isSolidForRay);
-  currentTarget = result.hit ? result : null;
-  if (currentTarget) {
-    highlightBox.position.set(currentTarget.x + 0.5, currentTarget.y + 0.5, currentTarget.z + 0.5);
-    highlightBox.visible = true;
-  } else {
+  // 블록 히트 거리(대략) - 정확한 t값을 반환하지 않으므로 히트 셀 중심까지의 거리로 근사한다.
+  const blockDist = result.hit
+    ? Math.hypot(result.x + 0.5 - o.x, result.y + 0.5 - o.y, result.z + 0.5 - o.z)
+    : Infinity;
+
+  let mobHit = null;
+  if (mobs.length > 0) {
+    // renderer.render()은 이 프레임 맨 끝에서야 씬 전체의 matrixWorld를 갱신하는데,
+    // 몹은 updateMobs(dt)에서 이미 이번 프레임에 움직였을 수 있으므로(위치는 갱신됐지만
+    // matrixWorld는 아직 이전 프레임 값) 레이캐스트 전에 직접 갱신해줘야 조준이 한 프레임
+    // 밀리지 않는다. 몹 수가 적어(MOBS_MAX) 매 프레임 호출해도 비용은 무시할 만하다.
+    for (const m of mobs) m.group.updateMatrixWorld();
+    _mobRaycaster.set(o, _rayDir);
+    _mobRaycaster.far = REACH;
+    const hits = _mobRaycaster.intersectObjects(mobs.map((m) => m.group), true);
+    if (hits.length > 0) mobHit = hits[0];
+  }
+
+  // 몹과 블록 중 더 가까운 쪽을 조준 대상으로 삼는다(벽 뒤 몹을 공격하지 못하게).
+  if (mobHit && mobHit.distance < blockDist) {
+    currentMobTarget = mobs.find((m) => m.group === mobHit.object.parent);
+    currentTarget = null;
     highlightBox.visible = false;
+  } else {
+    currentMobTarget = null;
+    currentTarget = result.hit ? result : null;
+    if (currentTarget) {
+      highlightBox.position.set(currentTarget.x + 0.5, currentTarget.y + 0.5, currentTarget.z + 0.5);
+      highlightBox.visible = true;
+    } else {
+      highlightBox.visible = false;
+    }
   }
 }
 
@@ -2034,6 +2243,7 @@ function animate() {
   world.processQueue();
   updateVitals(dt);
   updateDayNight(dt);
+  updateMobs(dt); // dayFactor는 updateDayNight가 이 프레임에 이미 갱신해 둔 값을 사용
   updateClouds(dt);
   updateSmelting(dt);
   renderSlotEl(smeltInputEl, SMELT_INPUT_INDEX);
@@ -2042,10 +2252,24 @@ function animate() {
   smeltProgressFillEl.style.width = `${Math.min(100, (smeltProgress / SMELT_TIME_PER_ITEM) * 100)}%`;
 
   updateTouchMineArming();
-  if (!inventoryOpen && !isDead) updateTarget(); else { currentTarget = null; highlightBox.visible = false; }
+  if (!inventoryOpen && !isDead) {
+    updateTarget();
+  } else {
+    currentTarget = null; currentMobTarget = null; highlightBox.visible = false;
+  }
+  if (playerAttackTimer > 0) playerAttackTimer -= dt;
   const targetKey = currentTarget ? `${currentTarget.x},${currentTarget.y},${currentTarget.z}` : null;
   if (targetKey !== lastTargetKey) { miningProgress = 0; lastTargetKey = targetKey; }
-  if (isMining && currentTarget && !inventoryOpen && !isDead) {
+  if (isMining && currentMobTarget && !inventoryOpen && !isDead) {
+    // 몹 공격: 진행바 없이 공격 쿨다운마다 즉시 데미지(들고 있는 도구가 검이면 검 데미지)
+    if (playerAttackTimer <= 0) {
+      const heldWeapon = slots[selectedHotbar];
+      const dmg = heldWeapon ? (SWORD_DAMAGE[heldWeapon.id] ?? HAND_DAMAGE) : HAND_DAMAGE;
+      currentMobTarget.hp -= dmg;
+      playerAttackTimer = PLAYER_ATTACK_COOLDOWN;
+    }
+    mineProgressEl.style.opacity = '0';
+  } else if (isMining && currentTarget && !inventoryOpen && !isDead) {
     const blockId = world.getBlockWorld(currentTarget.x, currentTarget.y, currentTarget.z);
     const heldTool = slots[selectedHotbar];
     const toolTier = heldTool ? (TOOL_TIER[heldTool.id] || 0) : 0;
