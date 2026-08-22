@@ -800,9 +800,13 @@ class Chunk {
         }
       }
     }
-    const capOffsets = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]];
-    for (const [dx, dz] of capOffsets) {
-      if (this.get(x + dx, top, z + dz) === BLOCK.AIR) this.set(x + dx, top, z + dz, BLOCK.LEAVES);
+    // 예전엔 십자(+) 모양 5칸만 채워서 대각선 방향에 빈틈이 있었는데, 그 틈으로 햇빛이
+    // 그대로 통과해서 나무 그림자 한가운데에 지형과 무관한 밝은 구멍이 생기는 문제가
+    // 있었다(실기기에서 신고된 버그) - 3x3을 꽉 채워서 맨 위층에 빈틈이 없게 한다.
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        if (this.get(x + dx, top, z + dz) === BLOCK.AIR) this.set(x + dx, top, z + dz, BLOCK.LEAVES);
+      }
     }
   }
 
