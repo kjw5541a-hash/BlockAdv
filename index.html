@@ -85,7 +85,9 @@
   #inventory-toggle-button {
     position: fixed; right: 12px; top: 12px; padding: 8px 12px; border-radius: 6px;
     background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.45); color: #fff;
-    font-size: 12px; z-index: 15; touch-action: none; align-items: center; justify-content: center;
+    /* 인벤토리 패널(z-index 90)보다 낮으면 패널이 열렸을 때 이 버튼을 완전히 덮어버려서
+       탭해도 안 닫힘(모바일에서 인벤토리 나가는 버튼이 없어 보이는 버그) - 패널보다 위로 */
+    font-size: 12px; z-index: 95; touch-action: none; align-items: center; justify-content: center;
     user-select: none;
   }
   #vitals {
