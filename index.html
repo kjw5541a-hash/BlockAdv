@@ -1117,6 +1117,9 @@ sun.shadow.camera.far = SUN_DIST * 1.6;
 // 1024 해상도를 더 좁은 영역에 쓰니 그림자 선명도도 같이 올라간다.
 sun.shadow.camera.left = -26; sun.shadow.camera.right = 26;
 sun.shadow.camera.top = 26; sun.shadow.camera.bottom = -26;
+// three.js가 렌더 시점에 알아서 갱신해주긴 하지만, left/right/top/bottom을 바꾼 뒤
+// 명시적으로 한 번 불러주는 게 안전하다(다른 엔진/버전에서는 자동 갱신을 보장 안 함).
+sun.shadow.camera.updateProjectionMatrix();
 sun.shadow.bias = -0.0015;
 scene.add(sun);
 sun.target = new THREE.Object3D();
@@ -1155,9 +1158,21 @@ function updateDayNight(dt) {
     camera.position.y + Math.max(sunHeight, -0.15) * SUN_DIST, // 너무 밑으로 안 내려가게(그림자 카메라 안정성)
     camera.position.z + SUN_DIST * 0.35
   );
-  sun.intensity = 0.05 + 1.05 * dayFactor;
+  // 태양이 지평선에 거의 붙은 각도(일출 직후 등)일 때, 지형의 자잘한 높이 차이(칸마다
+  // 1블록씩 어긋나는 계단 턱)의 옆면은 빛을 거의 정면으로 받아 강하게 빛나는데, 바로 옆
+  // 평평한 윗면은 N·L이 0에 가까워 거의 빛을 못 받는다 - 그 결과 평지 전체가 밝고 어두운
+  // 삼각형 얼룩으로 뒤덮인 것처럼 보인다(실기기에서 신고된 버그, 재현 확인함). 방향광
+  // 세기만 줄이면 방향광/환경광 두 항이 똑같이 줄어서 명암비 자체는 그대로라 효과가
+  // 없었다 - 그래서 이 각도 구간에서만 환경광(그림자 쪽을 채워주는 빛)을 별도로 더
+  // 올려서, 옆면(직사광)과 윗면(환경광만)의 밝기 차이 자체를 줄이는 방식으로 고쳤다.
+  const elevationFactor = smoothstep(0, 0.2, Math.max(0, sunHeight));
+  sun.intensity = (0.05 + 0.85 * dayFactor) * elevationFactor;
   sun.color.lerpColors(NIGHT_SUN_COLOR, DAY_SUN_COLOR, dayFactor);
-  ambient.intensity = 0.12 + 0.43 * dayFactor;
+  // 지평선 근처(elevationFactor가 낮은 구간)에서만 환경광을 추가로 끌어올려 위 문제의
+  // 명암비를 낮춘다 - 태양이 충분히 뜬 뒤(elevationFactor=1)에는 이 보정이 0이 되어
+  // 평소 낮 시간대 분위기에는 영향이 없다.
+  const grazingFillBoost = (1 - elevationFactor) * 1.6 * dayFactor;
+  ambient.intensity = 0.12 + 0.43 * dayFactor + grazingFillBoost;
   ambient.color.lerpColors(NIGHT_AMBIENT_COLOR, DAY_AMBIENT_COLOR, dayFactor);
 
   _scratchColor.lerpColors(SKY_COLOR_NIGHT, SKY_COLOR_DAY, dayFactor);
