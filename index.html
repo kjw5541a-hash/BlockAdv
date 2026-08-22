@@ -677,8 +677,9 @@ function makeAtlasTexture() {
 
 // ---------- 청크 ----------
 const CHUNK_X = 16, CHUNK_Z = 16, CHUNK_Y = 64;
-const SHADOW_CHUNK_RADIUS = 1; // 그림자는 렌더 거리와 무관하게 플레이어 주변 이 반경까지만
-// (앞으로 오브젝트가 더 늘어날 걸 감안해 여유를 두려고 2 -> 1로 줄임 - 3x3청크만 그림자 처리)
+const SHADOW_CHUNK_RADIUS = 2; // 그림자는 렌더 거리와 무관하게 플레이어 주변 이 반경까지만
+// (실기기 확인 결과 1칸(3x3청크)은 범위가 너무 좁아 바로 옆 지형에도 그림자가 안 켜지는
+// 경우가 눈에 띄어서, 성능 트레이드오프를 감수하고 2칸(5x5청크)로 다시 넓힘)
 function idx(x, y, z) { return (y * CHUNK_Z + z) * CHUNK_X + x; }
 
 // 바이오미 3종(지형 높이와 무관한 저주파 노이즈로 결정) + 호수 수면 높이.
@@ -1113,10 +1114,10 @@ sun.shadow.camera.near = 1;
 // far는 태양~타깃(플레이어) 거리보다 넉넉히 커야 함 - 안 그러면 정작 그림자가 필요한
 // 플레이어 주변이 그림자 카메라의 원거리 절단면 밖으로 빠져서 그림자가 아예 안 생김.
 sun.shadow.camera.far = SUN_DIST * 1.6;
-// 반경 1청크(3x3, 한 변 48유닛)만 덮으면 되므로 프러스텀도 그만큼만 - 덤으로 같은
-// 1024 해상도를 더 좁은 영역에 쓰니 그림자 선명도도 같이 올라간다.
-sun.shadow.camera.left = -26; sun.shadow.camera.right = 26;
-sun.shadow.camera.top = 26; sun.shadow.camera.bottom = -26;
+// SHADOW_CHUNK_RADIUS(2청크 = 5x5, 한 변 80유닛)만 덮으면 되므로 프러스텀도 그만큼만
+// + 약간의 여유(±44).
+sun.shadow.camera.left = -44; sun.shadow.camera.right = 44;
+sun.shadow.camera.top = 44; sun.shadow.camera.bottom = -44;
 // three.js가 렌더 시점에 알아서 갱신해주긴 하지만, left/right/top/bottom을 바꾼 뒤
 // 명시적으로 한 번 불러주는 게 안전하다(다른 엔진/버전에서는 자동 갱신을 보장 안 함).
 sun.shadow.camera.updateProjectionMatrix();
