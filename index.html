@@ -182,6 +182,7 @@
   <p>데스크탑: 좌클릭 채굴/공격(홀드) / 우클릭 설치·섭취 / 숫자키 1~9 핫바 / E 인벤토리</p>
   <p>모바일: 좌하단 조이스틱 이동 / 화면 드래그 시점 회전 / 화면 탭(홀드) 채굴·공격 / 우측 버튼 설치·섭취·인벤토리</p>
   <p style="opacity:0.5; font-size:12px;">밤이 되면 좀비가 나타납니다 - 검을 조준하고 홀드하면 공격, 처치하면 썩은 살점을 드롭합니다.</p>
+  <p style="opacity:0.5; font-size:12px;">광원이 없는 동굴/지하는 어둡게 보입니다 - 석탄+막대기로 횃불을 만들어 밝힐 수 있습니다.</p>
   <p style="opacity:0.5; font-size:12px;">8단계 검증 빌드: 저장/불러오기. 5초마다 자동 저장되고, 새로고침하면 캐낸/설치한 블록·인벤토리·체력/배고픔·위치가 그대로 복원됩니다.</p>
   <div id="render-distance">
     <label for="render-distance-slider">렌더 거리 (반경 <span id="render-distance-value">4</span>청크)</label>
@@ -348,6 +349,7 @@ const BLOCK = {
   FURNACE: 22, IRON_INGOT: 23,
   SNOW: 24, WATER: 25,
   WOOD_SWORD: 26, STONE_SWORD: 27, IRON_SWORD: 28, ROTTEN_FLESH: 29,
+  TORCH: 30,
 };
 const ATLAS_COLS = 5, ATLAS_ROWS = 7, TILE_PX = 16;
 const TILE = {
@@ -361,6 +363,7 @@ const TILE = {
   FURNACE_TOP: 24, FURNACE_SIDE: 25, IRON_INGOT_ICON: 26,
   SNOW_TOP: 27, SNOW_SIDE: 28, WATER: 29,
   WOOD_SWORD_ICON: 30, STONE_SWORD_ICON: 31, IRON_SWORD_ICON: 32, ROTTEN_FLESH_ICON: 33,
+  TORCH: 34,
 };
 // 블록별 [top, bottom, side] 타일 인덱스 (설치 가능한 블록만 등록)
 const BLOCK_TILES = {
@@ -377,6 +380,7 @@ const BLOCK_TILES = {
   [BLOCK.FURNACE]: [TILE.FURNACE_TOP, TILE.STONE, TILE.FURNACE_SIDE],
   [BLOCK.SNOW]: [TILE.SNOW_TOP, TILE.DIRT, TILE.SNOW_SIDE],
   [BLOCK.WATER]: [TILE.WATER, TILE.WATER, TILE.WATER],
+  [BLOCK.TORCH]: [TILE.TORCH, TILE.TORCH, TILE.TORCH],
 };
 // 인벤토리 아이콘용 타일 (설치 불가능한 아이템까지 전부 포함)
 const ITEM_ICON_TILE = {
@@ -408,6 +412,7 @@ const BLOCK_HARDNESS = {
   [BLOCK.GRASS]: 0.25, [BLOCK.DIRT]: 0.25, [BLOCK.SAND]: 0.25, [BLOCK.SNOW]: 0.25, [BLOCK.LEAVES]: 0,
   [BLOCK.LOG]: 0.3, [BLOCK.PLANKS]: 0.3, [BLOCK.CRAFTING_TABLE]: 0.3,
   [BLOCK.STONE]: 0.6, [BLOCK.COAL_ORE]: 0.7, [BLOCK.IRON_ORE]: 0.9, [BLOCK.FURNACE]: 0.6,
+  [BLOCK.TORCH]: 0.1,
 };
 // 도구별로 배속이 적용되는 블록 분류(곡괭이=돌 계열, 도끼=나무 계열, 삽=흙 계열).
 // 들고 있는 도구의 분류와 캐려는 블록의 분류가 일치할 때만 TIER_SPEED_MULT가 적용된다.
@@ -443,13 +448,33 @@ const BLOCK_NAME_KO = {
   [BLOCK.FURNACE]: '용광로', [BLOCK.IRON_INGOT]: '철 주괴',
   [BLOCK.SNOW]: '눈', [BLOCK.WATER]: '물',
   [BLOCK.WOOD_SWORD]: '나무 검', [BLOCK.STONE_SWORD]: '돌 검', [BLOCK.IRON_SWORD]: '철 검',
-  [BLOCK.ROTTEN_FLESH]: '썩은 살점',
+  [BLOCK.ROTTEN_FLESH]: '썩은 살점', [BLOCK.TORCH]: '횃불',
 };
 // 물은 시각적으로는 꽉 찬 블록이지만(반투명 렌더링 없이 단순하게), 충돌/레이캐스트에서는
 // 공기처럼 취급해서 수영 로직 없이도 그냥 통과할 수 있게 한다 - 그래서 채굴 대상으로
 // 선택되지도 않고(물을 얻는 방법이 없음), 플레이어가 호수 위를 걸어서 지나갈 수도 없이
 // 자유비행으로 통과하게 된다(이 게임은 기존에도 자유비행 이동이라 수영 전용 처리 불필요).
 function isBlockSolid(id) { return id !== BLOCK.AIR && id !== BLOCK.WATER; }
+
+// ---------- 조명(스카이라이트/블록광 전파) ----------
+// 기존에는 태양(방향광) + 환경광(상수) 두 개만 있고 그 어느 쪽도 가려짐(occlusion)을
+// 계산하지 않아서, 지하 동굴도 지표면과 똑같이 밝게 보이는 문제가 있었다(실기기가 아닌
+// PC에서 확인된 버그 신고: 광원이 없는 동굴이 너무 잘 보임). 각 블록마다 "하늘이 보이는
+// 정도(스카이라이트)"와 "근처 발광 블록(횃불)에서 오는 빛(블록광)"을 마인크래프트 방식과
+// 비슷하게 BFS로 전파시켜 0~15 단계로 계산하고, 그 값을 정점 컬러로 청크 메시에 실어서
+// 표면의 "밝기 배율" 자체를 낮춘다 - 태양/환경광 세기는 그대로 두고, 각 표면이 실제로
+// 얼마나 빛에 노출돼 있는지를 곱해주는 방식이라 기존 낮/밤 시스템과 자연스럽게 합쳐진다.
+const LIGHT_MAX = 15;
+// 마인크래프트의 실제 밝기 공식(밝기 = 0.9^(15-레벨))을 그대로 재사용 - 레벨이 낮아질수록
+// 기하급수적으로 어두워져서 "광원 없는 동굴은 거의 안 보임"이 자연스럽게 나온다.
+const LIGHT_CURVE = new Float32Array(LIGHT_MAX + 1);
+for (let i = 0; i <= LIGHT_MAX; i++) LIGHT_CURVE[i] = Math.pow(0.9, LIGHT_MAX - i);
+const LIGHT_EMISSION = { [BLOCK.TORCH]: 14 }; // 발광 블록과 그 밝기(0~15)
+// 빛 전파용 "막힘" 판정은 isBlockSolid(충돌/레이캐스트용)와 별개로 둔다 - 횃불은 충돌은
+// 막아도(벽처럼 서 있는 물체) 빛 자체는 그 칸을 그냥 통과해서 퍼져나가야 자연스럽다.
+function isLightOpaque(id) { return id !== BLOCK.AIR && id !== BLOCK.WATER && id !== BLOCK.TORCH; }
+const LIGHT_DIRS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+
 // ---------- 제련(용광로) ----------
 // 원석을 넣고 연료(석탄)를 태워서 시간이 지나면 자동으로 완제품이 나온다. 작업대와
 // 마찬가지로 용광로를 직접 근처에 놓아야 하는 건 아니고(이 게임은 제작대도 그렇듯
@@ -718,6 +743,22 @@ function makeAtlasTexture() {
     }
   }
 
+  // 횃불: 발광 블록이라는 걸 시각적으로 알아보기 쉽게 따뜻한 주황색 바탕에 밝은 중심부를 준다.
+  // 이 엔진은 모든 블록이 완전한 정육면체라(막대+불꽃 형태의 비정육면체 모델 없음), 용광로/
+  // 작업대처럼 단순화해서 "빛나는 블록"으로 표현한다.
+  {
+    const cx = TILE.TORCH % ATLAS_COLS, cy = Math.floor(TILE.TORCH / ATLAS_COLS);
+    const centerX = 7.5, centerY = 7.5;
+    for (let y = 0; y < TILE_PX; y++) {
+      for (let x = 0; x < TILE_PX; x++) {
+        const d = Math.hypot(x - centerX, y - centerY);
+        const amt = Math.floor((rand() - 0.5) * 16);
+        const base = d < 4 ? '#fbe08a' : '#e2882c';
+        px(cx, cy, x, y, shade(base, amt));
+      }
+    }
+  }
+
   const tex = new THREE.CanvasTexture(canvas);
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
@@ -754,6 +795,9 @@ class Chunk {
     this.cx = cx; this.cz = cz;
     this.blocks = new Uint8Array(CHUNK_X * CHUNK_Y * CHUNK_Z);
     this.generateTerrain(gen);
+    this.skyLight = new Uint8Array(CHUNK_X * CHUNK_Y * CHUNK_Z);
+    this.blockLight = new Uint8Array(CHUNK_X * CHUNK_Y * CHUNK_Z);
+    this.computeLight();
     this.mesh = null;
   }
   get(x, y, z) {
@@ -761,6 +805,80 @@ class Chunk {
     return this.blocks[idx(x, y, z)];
   }
   set(x, y, z, id) { this.blocks[idx(x, y, z)] = id; }
+
+  // 스카이라이트/블록광 중 더 밝은 값을 그 위치의 최종 밝기로 쓴다(마인크래프트와 동일한
+  // "둘 중 큰 값" 방식 - 낮에 하늘이 보이는 곳과 횃불 근처가 둘 다 밝게 나오되, 서로
+  // 더하기(가산)는 하지 않는다). 청크 밖(범위 초과) 좌표는 안전하게 최대 밝기로 취급한다 -
+  // 안 그러면 맵 세로 경계(y<0, y>=CHUNK_Y) 근처에서 실제로는 열려있는데도 부자연스럽게
+  // 어두워 보일 수 있다.
+  getLight(x, y, z) {
+    if (x < 0 || x >= CHUNK_X || y < 0 || y >= CHUNK_Y || z < 0 || z >= CHUNK_Z) return LIGHT_MAX;
+    const i = idx(x, y, z);
+    const sky = this.skyLight[i], block = this.blockLight[i];
+    return sky > block ? sky : block;
+  }
+
+  // 이 청크 하나의 조명을 처음부터 다시 계산한다(지형 생성 직후, 그리고 채굴/설치로
+  // 이 청크의 블록이 바뀔 때마다 호출됨). 성능/단순성을 위해 전파는 이 청크 경계 안으로만
+  // 한정한다(이웃 청크로는 안 번짐) - 청크마다 독립적으로 계산 가능해서 이웃 청크가 바뀌어도
+  // 이 청크의 조명은 다시 계산할 필요가 없다는 뜻이기도 하다. 트레이드오프로 동굴이 정확히
+  // 청크 경계에 걸쳐 있으면 그 경계에서 빛이 자연스럽게 안 이어질 수 있지만(드문 경우),
+  // 매 블록 변경마다(원거리 전체 재계산 없이) 감당 가능한 비용으로 유지하기 위한 선택.
+  computeLight() {
+    this.skyLight.fill(0);
+    this.blockLight.fill(0);
+    const skyQueue = [];
+    const blockQueue = [];
+    // 1) 스카이라이트 시드: 각 컬럼 맨 위부터 아래로, 뭔가에 막히기 전까지는 감쇠 없이 최대
+    //    밝기로 채운다(뚫린 하늘 아래는 전부 밝아야 함). 막힌 뒤(동굴 등)는 아래에서 BFS로만
+    //    옆에서 빛이 새어 들어올 수 있게 한다.
+    for (let x = 0; x < CHUNK_X; x++) {
+      for (let z = 0; z < CHUNK_Z; z++) {
+        for (let y = CHUNK_Y - 1; y >= 0; y--) {
+          if (isLightOpaque(this.get(x, y, z))) break;
+          this.skyLight[idx(x, y, z)] = LIGHT_MAX;
+          skyQueue.push(x, y, z);
+        }
+      }
+    }
+    // 2) 블록광 시드: 발광 블록(횃불)에서
+    for (let x = 0; x < CHUNK_X; x++) {
+      for (let y = 0; y < CHUNK_Y; y++) {
+        for (let z = 0; z < CHUNK_Z; z++) {
+          const em = LIGHT_EMISSION[this.get(x, y, z)];
+          if (em) {
+            this.blockLight[idx(x, y, z)] = em;
+            blockQueue.push(x, y, z);
+          }
+        }
+      }
+    }
+    this._propagateLight(this.skyLight, skyQueue);
+    this._propagateLight(this.blockLight, blockQueue);
+  }
+
+  // 너비 우선 탐색으로 6방향에 1씩 감쇠시키며 빛을 퍼뜨린다(큐를 배열+인덱스 포인터로
+  // 구현해서 shift()의 O(n) 비용을 피함).
+  _propagateLight(arr, queue) {
+    let qi = 0;
+    while (qi < queue.length) {
+      const x = queue[qi], y = queue[qi + 1], z = queue[qi + 2];
+      qi += 3;
+      const level = arr[idx(x, y, z)];
+      if (level <= 1) continue;
+      const next = level - 1;
+      for (const [dx, dy, dz] of LIGHT_DIRS) {
+        const nx = x + dx, ny = y + dy, nz = z + dz;
+        if (nx < 0 || nx >= CHUNK_X || ny < 0 || ny >= CHUNK_Y || nz < 0 || nz >= CHUNK_Z) continue;
+        if (isLightOpaque(this.get(nx, ny, nz))) continue;
+        const ni = idx(nx, ny, nz);
+        if (arr[ni] < next) {
+          arr[ni] = next;
+          queue.push(nx, ny, nz);
+        }
+      }
+    }
+  }
 
   generateTerrain(gen) {
     const { noise, biomeNoise, mountainNoise, lakeNoise, caveNoise } = gen;
@@ -862,12 +980,12 @@ class Chunk {
   }
 
   // 청크당 메시 1개: 노출된 면만 모아 BufferGeometry 하나로 병합 (face culling)
-  buildMesh(sharedMaterial, getNeighborBlock) {
-    const positions = [], normals = [], uvs = [];
+  buildMesh(sharedMaterial, getNeighborBlock, getNeighborLight) {
+    const positions = [], normals = [], uvs = [], colors = [];
     const uvStep = 1 / ATLAS_COLS; // (cols === rows 이므로 동일 step 사용)
     const vStep = 1 / ATLAS_ROWS;
 
-    function addFace(x, y, z, dir, tileIdx) {
+    function addFace(x, y, z, dir, tileIdx, lightFactor) {
       const tx = tileIdx % ATLAS_COLS, ty = Math.floor(tileIdx / ATLAS_COLS);
       const u0 = tx * uvStep, u1 = u0 + uvStep;
       // 캔버스 좌표는 위가 y=0이라 텍스처 V를 뒤집어줌
@@ -891,13 +1009,14 @@ class Chunk {
           positions.push(x + p[0], y + p[1], z + p[2]);
           normals.push(normal[0], normal[1], normal[2]);
           uvs.push(uvsQuad[vi][0], uvsQuad[vi][1]);
+          colors.push(lightFactor, lightFactor, lightFactor);
         }
       }
     }
 
-    // 이웃 판정 (청크 경계는 getNeighborBlock 콜백으로 실제 이웃 청크 조회). buildMesh 호출당
-    // 한 번만 만든다 - 예전엔 이 클로저를 복셀마다(청크당 최대 16384번) 새로 만들어서
-    // 메싱할 때마다 불필요한 가비지가 많이 생겼었다(9단계 성능 패스에서 정리).
+    // 이웃 판정 (청크 경계는 getNeighborBlock/getNeighborLight 콜백으로 실제 이웃 청크 조회).
+    // buildMesh 호출당 한 번만 만든다 - 예전엔 이 클로저를 복셀마다(청크당 최대 16384번)
+    // 새로 만들어서 메싱할 때마다 불필요한 가비지가 많이 생겼었다(9단계 성능 패스에서 정리).
     const self = this;
     function neighborSolid(x, y, z, dx, dy, dz) {
       const nx = x + dx, ny = y + dy, nz = z + dz;
@@ -907,6 +1026,20 @@ class Chunk {
       if (ny < 0 || ny >= CHUNK_Y) return false;
       return getNeighborBlock(self.cx * CHUNK_X + nx, ny, self.cz * CHUNK_Z + nz) !== BLOCK.AIR;
     }
+    // 이 면이 노출된 바깥(공기/횃불 등) 칸의 밝기를 얻어 정점 컬러로 싣는다 - 표면 자체가
+    // 아니라 표면이 맞닿은 빈 공간의 밝기를 봐야 한다(광원 앞에 서 있는 벽면처럼).
+    function neighborLightFactor(x, y, z, dx, dy, dz) {
+      const nx = x + dx, ny = y + dy, nz = z + dz;
+      let level;
+      if (nx >= 0 && nx < CHUNK_X && ny >= 0 && ny < CHUNK_Y && nz >= 0 && nz < CHUNK_Z) {
+        level = self.getLight(nx, ny, nz);
+      } else if (ny < 0 || ny >= CHUNK_Y) {
+        level = LIGHT_MAX;
+      } else {
+        level = getNeighborLight(self.cx * CHUNK_X + nx, ny, self.cz * CHUNK_Z + nz);
+      }
+      return LIGHT_CURVE[level];
+    }
 
     for (let x = 0; x < CHUNK_X; x++) {
       for (let y = 0; y < CHUNK_Y; y++) {
@@ -914,12 +1047,12 @@ class Chunk {
           const b = this.get(x, y, z);
           if (b === BLOCK.AIR) continue;
           const tiles = BLOCK_TILES[b];
-          if (!neighborSolid(x, y, z, 0, 1, 0)) addFace(x, y, z, 'top', tiles[0]);
-          if (!neighborSolid(x, y, z, 0, -1, 0)) addFace(x, y, z, 'bottom', tiles[1]);
-          if (!neighborSolid(x, y, z, 0, 0, -1)) addFace(x, y, z, 'north', tiles[2]);
-          if (!neighborSolid(x, y, z, 0, 0, 1)) addFace(x, y, z, 'south', tiles[2]);
-          if (!neighborSolid(x, y, z, -1, 0, 0)) addFace(x, y, z, 'west', tiles[2]);
-          if (!neighborSolid(x, y, z, 1, 0, 0)) addFace(x, y, z, 'east', tiles[2]);
+          if (!neighborSolid(x, y, z, 0, 1, 0)) addFace(x, y, z, 'top', tiles[0], neighborLightFactor(x, y, z, 0, 1, 0));
+          if (!neighborSolid(x, y, z, 0, -1, 0)) addFace(x, y, z, 'bottom', tiles[1], neighborLightFactor(x, y, z, 0, -1, 0));
+          if (!neighborSolid(x, y, z, 0, 0, -1)) addFace(x, y, z, 'north', tiles[2], neighborLightFactor(x, y, z, 0, 0, -1));
+          if (!neighborSolid(x, y, z, 0, 0, 1)) addFace(x, y, z, 'south', tiles[2], neighborLightFactor(x, y, z, 0, 0, 1));
+          if (!neighborSolid(x, y, z, -1, 0, 0)) addFace(x, y, z, 'west', tiles[2], neighborLightFactor(x, y, z, -1, 0, 0));
+          if (!neighborSolid(x, y, z, 1, 0, 0)) addFace(x, y, z, 'east', tiles[2], neighborLightFactor(x, y, z, 1, 0, 0));
         }
       }
     }
@@ -928,6 +1061,7 @@ class Chunk {
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
 
     // 모든 청크가 완전히 같은 재질(같은 아틀라스)을 쓰므로 청크마다 새로 만들지 않고
     // World가 만들어둔 걸 하나 공유해서 쓴다(채굴/설치로 리메싱될 때마다 재질 객체를
@@ -983,8 +1117,11 @@ function raycastVoxels(ox, oy, oz, dx, dy, dz, maxDist, isSolid) {
 class DynamicWorld {
   constructor(scene, atlasTexture, seed, radiusInChunks) {
     this.scene = scene;
-    // 모든 청크 메시가 공유하는 재질 하나만 만든다 (리메싱마다 새로 만들지 않음)
-    this.material = new THREE.MeshLambertMaterial({ map: atlasTexture });
+    // 모든 청크 메시가 공유하는 재질 하나만 만든다 (리메싱마다 새로 만들지 않음).
+    // vertexColors: true로 켜서 조명(스카이라이트/블록광) 계산 결과를 청크 메시의 정점
+    // 컬러로 실어 보내면, 텍스처 색상에 곱해져서 태양/환경광 세기는 그대로 두고도 각
+    // 표면이 실제로 빛에 얼마나 노출됐는지에 따라 어두워지게 만들 수 있다.
+    this.material = new THREE.MeshLambertMaterial({ map: atlasTexture, vertexColors: true });
     this.noise = new ValueNoise2D(seed);
     this.biomeNoise = new ValueNoise2D(seed + 1000); // 지형 높이와 무관한 별도 노이즈로 바이오미 경계 결정
     this.mountainNoise = new ValueNoise2D(seed + 2000); // 산악 지역 결정(지형 기복과 별개)
@@ -1015,6 +1152,17 @@ class DynamicWorld {
     const lx = ((wx % CHUNK_X) + CHUNK_X) % CHUNK_X;
     const lz = ((wz % CHUNK_Z) + CHUNK_Z) % CHUNK_Z;
     return chunk.get(lx, y, lz);
+  }
+
+  // 로드 안 된 청크 밖은 최대 밝기로 취급한다(렌더 거리 경계 바로 안쪽 청크가 실제로는
+  // 트인 곳인데도 "이웃이 없다"는 이유로 부자연스럽게 어두워지는 걸 방지).
+  getLightWorld(wx, y, wz) {
+    const cx = Math.floor(wx / CHUNK_X), cz = Math.floor(wz / CHUNK_Z);
+    const chunk = this.chunks.get(this.key(cx, cz));
+    if (!chunk) return LIGHT_MAX;
+    const lx = ((wx % CHUNK_X) + CHUNK_X) % CHUNK_X;
+    const lz = ((wz % CHUNK_Z) + CHUNK_Z) % CHUNK_Z;
+    return chunk.getLight(lx, y, lz);
   }
 
   setRadius(r) {
@@ -1084,7 +1232,11 @@ class DynamicWorld {
     const chunk = this.chunks.get(key);
     if (!chunk) return;
     if (chunk.mesh) { this.scene.remove(chunk.mesh); chunk.dispose(); }
-    const mesh = chunk.buildMesh(this.material, (wx, y, wz) => this.getBlockWorld(wx, y, wz));
+    const mesh = chunk.buildMesh(
+      this.material,
+      (wx, y, wz) => this.getBlockWorld(wx, y, wz),
+      (wx, y, wz) => this.getLightWorld(wx, y, wz)
+    );
     // 그림자는 렌더 거리 전체가 아니라 플레이어 주변 좁은 반경에서만 켠다(비용 억제).
     // 새로 만든 메시는 기본이 false라 리메싱될 때마다 다시 켜줘야 한다.
     const dist = Math.max(Math.abs(chunk.cx - this._centerCx), Math.abs(chunk.cz - this._centerCz));
@@ -1105,6 +1257,10 @@ class DynamicWorld {
     if (y < 0 || y >= CHUNK_Y) return false;
     chunk.set(lx, y, lz, blockId);
     this.diffs.set(`${wx},${y},${wz}`, blockId);
+    // 블록을 캐거나 놓으면 그 청크의 조명도 다시 계산해야 한다(예: 천장을 뚫으면 하늘빛이
+    // 새로 들어오고, 횃불을 놓거나 캐면 그 주변 블록광이 바뀐다) - computeLight()는 이
+    // 청크 경계 안에서만 전파하므로(위 주석 참고) 이웃 청크의 조명은 영향 없이 그대로 둬도 된다.
+    chunk.computeLight();
     this._remesh(key);
     if (lx === 0) this._remeshIfLoaded(cx - 1, cz);
     if (lx === CHUNK_X - 1) this._remeshIfLoaded(cx + 1, cz);
@@ -1492,6 +1648,8 @@ const RECIPES = [
   { ingredients: [{ id: BLOCK.IRON_INGOT, count: 3 }, { id: BLOCK.STICK, count: 2 }], output: { id: BLOCK.IRON_PICKAXE, count: 1 } },
   { ingredients: [{ id: BLOCK.IRON_INGOT, count: 2 }, { id: BLOCK.STICK, count: 1 }], output: { id: BLOCK.IRON_SWORD, count: 1 } },
   { ingredients: [{ id: BLOCK.IRON_INGOT, count: 1 }, { id: BLOCK.STICK, count: 2 }], output: { id: BLOCK.IRON_SHOVEL, count: 1 } },
+  // 횃불: 석탄+막대기 조합을 쓰는 다른 레시피가 없어서 충돌 걱정 없이 아무 위치에 둬도 된다.
+  { ingredients: [{ id: BLOCK.COAL_ORE, count: 1 }, { id: BLOCK.STICK, count: 1 }], output: { id: BLOCK.TORCH, count: 4 } },
 ];
 // 제작 그리드(36~44)의 내용물을 보고 레시피 매칭 + 결과 슬롯 갱신. 그리드에 레시피와
 // 무관한 재료가 섞여 있으면(정확히 일치하지 않으면) 매칭 실패로 처리한다.
