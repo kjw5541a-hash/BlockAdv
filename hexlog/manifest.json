@@ -1,0 +1,13 @@
+{
+  "name": "HexLog — 걸은 만큼 칠해지는 지도",
+  "short_name": "HexLog",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1b1d21",
+  "theme_color": "#1b1d21",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
