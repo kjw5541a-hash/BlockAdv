@@ -8,6 +8,12 @@ const GPX_STEP_M = 30;         // GPX 점 사이를 이 간격으로 보간해 �
 const GPX_GAP_M = 2000;        // 이보다 먼 두 점은 기록 끊김으로 보고 잇지 않는다
 const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
 const HEX_COLOR = '#ff7a18';
+const DONG_COLOR = '#7c4dff';
+const DONG_DIR = 'data/dong/';
+const GRID_MAX_CELLS = 3000;   // 미탐험 격자를 그릴 최대 칸 수. 이보다 넓게 축소하면 격자는 생략한다
+const DONG_ATTRIBUTION = '행정동 경계 <a href="https://sgis.kostat.go.kr" target="_blank">통계청 SGIS</a>' +
+  ' · <a href="https://github.com/vuski/admdongkor" target="_blank">vuski/admdongkor</a> (CC BY 4.0)';
+const EMPTY = { type: 'FeatureCollection', features: [] };
 
 const $ = (id) => document.getElementById(id);
 
@@ -71,6 +77,7 @@ async function addCells(cells, at = Date.now()) {
   await store.put(fresh);
   refreshMap();
   refreshStats();
+  noteNewCells(fresh);
   return fresh.length;
 }
 
@@ -96,10 +103,20 @@ function refreshMap() {
 
 function addHexLayers() {
   map.addSource('visited', { type: 'geojson', data: visitedGeoJSON() });
+  map.addSource('grid', { type: 'geojson', data: EMPTY });
+  map.addSource('dong', { type: 'geojson', data: EMPTY });
 
   // 색칠한 칸은 건물보다 아래에 깔아서 3D 건물이 그 위로 솟아 보이게 한다.
   const firstExtrusion = map.getStyle().layers.find((l) => l.type === 'fill-extrusion');
   const before = firstExtrusion ? firstExtrusion.id : undefined;
+
+  // 지금 보고 있는 동에서 아직 안 가 본 칸
+  map.addLayer({
+    id: 'grid-line',
+    type: 'line',
+    source: 'grid',
+    paint: { 'line-color': '#5a6270', 'line-width': 0.8, 'line-opacity': 0.45 },
+  }, before);
 
   map.addLayer({
     id: 'visited-fill',
@@ -113,6 +130,13 @@ function addHexLayers() {
     type: 'line',
     source: 'visited',
     paint: { 'line-color': HEX_COLOR, 'line-width': 1, 'line-opacity': 0.55 },
+  }, before);
+
+  map.addLayer({
+    id: 'dong-line',
+    type: 'line',
+    source: 'dong',
+    paint: { 'line-color': DONG_COLOR, 'line-width': 2.5, 'line-opacity': 0.85 },
   }, before);
 
   // 스타일에 3D 건물이 없으면 직접 얹는다 (OpenMapTiles 스키마).
@@ -140,16 +164,18 @@ function initMap() {
     center: [127.0276, 37.4979], // 강남역. 첫 위치를 잡기 전까지의 임시 중심
     zoom: 16,
     pitch: 50,
-    attributionControl: { compact: true },
+    attributionControl: { compact: true, customAttribution: DONG_ATTRIBUTION },
   });
 
   map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
   map.on('dragstart', () => { following = false; });
+  map.on('moveend', updateDong);
 
   map.on('load', () => {
     addHexLayers();
     mapReady = true;
     $('overlay').classList.add('hidden');
+    updateDong();
   });
 
   map.on('error', (e) => {
@@ -173,6 +199,169 @@ function moveMarker(lat, lng) {
   } else {
     marker.setLngLat([lng, lat]);
   }
+}
+
+/* ---------- 행정동과 탐험률 ----------
+   경계는 시군구별 파일로 나뉘어 있어 지금 보는 곳의 시군구만 받는다.
+   동 안의 전체 칸 수(k)는 빌드 때 미리 세 두었고, 탐험한 칸은 방문 칸의 중심이
+   경계 안에 드는지로 센다. 둘 다 같은 경계로 세므로 다 돌면 정확히 100%가 된다. */
+
+const CELL_AREA_M2 = h3.getHexagonAreaAvg(H3_RES, 'm2');
+
+const dongs = {
+  index: null,        // Promise<[{c: 시군구코드, n: 이름, b: bbox}]>
+  sgg: new Map(),     // 시군구코드 -> Promise<행정동 feature[]>
+  current: null,      // 화면 가운데에 있는 행정동 feature
+  explored: 0,        // current 안에서 방문한 칸 수
+};
+let dongSeq = 0;      // 늦게 끝난 이전 조회가 최신 결과를 덮어쓰지 않게 하는 번호
+
+async function fetchJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url}: ${res.status}`);
+  return res.json();
+}
+
+const polygonsOf = (g) => (g.type === 'Polygon' ? [g.coordinates] : g.coordinates);
+
+function bboxOf(g) {
+  const b = [180, 90, -180, -90];
+  for (const rings of polygonsOf(g)) {
+    for (const [lng, lat] of rings[0]) {
+      if (lng < b[0]) b[0] = lng;
+      if (lat < b[1]) b[1] = lat;
+      if (lng > b[2]) b[2] = lng;
+      if (lat > b[3]) b[3] = lat;
+    }
+  }
+  return b;
+}
+
+const inBox = (b, lng, lat) => lng >= b[0] && lat >= b[1] && lng <= b[2] && lat <= b[3];
+
+/* 짝홀 규칙 광선 투사. 고리를 모두 돌기 때문에 구멍이 있어도 맞게 판정된다. */
+function inRings(lng, lat, rings) {
+  let inside = false;
+  for (const ring of rings) {
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i];
+      const [xj, yj] = ring[j];
+      if ((yi > lat) !== (yj > lat) && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function inDong(f, lng, lat) {
+  return inBox(f.bbox, lng, lat) && polygonsOf(f.geometry).some((rings) => inRings(lng, lat, rings));
+}
+
+const cellInDong = (f, h) => { const [lat, lng] = h3.cellToLatLng(h); return inDong(f, lng, lat); };
+
+/* 받은 시군구는 기억해 두고, 실패하면 지워서 다음에 다시 시도하게 한다. */
+function loadSgg(code) {
+  if (!dongs.sgg.has(code)) {
+    dongs.sgg.set(code, fetchJson(`${DONG_DIR}${code}.json`)
+      .then(({ features }) => {
+        for (const f of features) f.bbox = bboxOf(f.geometry);
+        return features;
+      })
+      .catch((e) => { dongs.sgg.delete(code); throw e; }));
+  }
+  return dongs.sgg.get(code);
+}
+
+async function dongAt(lng, lat) {
+  if (!dongs.index) {
+    dongs.index = fetchJson(`${DONG_DIR}index.json`).catch((e) => { dongs.index = null; throw e; });
+  }
+  for (const s of await dongs.index) {
+    if (!inBox(s.b, lng, lat)) continue;
+    for (const f of await loadSgg(s.c)) if (inDong(f, lng, lat)) return f;
+  }
+  return null;
+}
+
+function countExplored(f) {
+  let n = 0;
+  for (const h of visited.keys()) if (cellInDong(f, h)) n++;
+  return n;
+}
+
+async function updateDong() {
+  if (!mapReady) return;
+  const seq = ++dongSeq;
+  const { lng, lat } = map.getCenter();
+
+  if (!dongs.current || !inDong(dongs.current, lng, lat)) {
+    let f;
+    try {
+      f = await dongAt(lng, lat);
+    } catch {
+      if (seq === dongSeq) showDongMessage('행정동 정보를 불러오지 못했습니다');
+      return;
+    }
+    if (seq !== dongSeq) return;
+    dongs.current = f;
+    dongs.explored = f ? countExplored(f) : 0;
+    map.getSource('dong').setData(f ? { type: 'FeatureCollection', features: [f] } : EMPTY);
+  }
+  refreshDongPanel();
+  refreshGrid();
+}
+
+/* addCells가 새로 칠한 칸 중 지금 동에 속한 것만큼 탐험 수를 올린다. */
+function noteNewCells(fresh) {
+  const f = dongs.current;
+  if (!f) return;
+  for (const { h } of fresh) if (cellInDong(f, h)) dongs.explored++;
+  refreshDongPanel();
+  refreshGrid();
+}
+
+/* 화면에 보이는 범위에서만 아직 안 가 본 칸을 그린다. 큰 면(수만 칸)도 화면 크기만큼만 계산한다. */
+function refreshGrid() {
+  if (!mapReady) return;
+  const src = map.getSource('grid');
+  const f = dongs.current;
+  if (!f) return src.setData(EMPTY);
+
+  const v = map.getBounds();
+  const pad = 0.0015; // 화면 가장자리에 걸친 칸도 그리도록 칸 하나 정도 넓힌다
+  const w = Math.max(v.getWest() - pad, f.bbox[0]);
+  const s = Math.max(v.getSouth() - pad, f.bbox[1]);
+  const e = Math.min(v.getEast() + pad, f.bbox[2]);
+  const n = Math.min(v.getNorth() + pad, f.bbox[3]);
+  if (w >= e || s >= n) return src.setData(EMPTY);
+
+  const areaM2 = (n - s) * 111320 * (e - w) * 111320 * Math.cos((((s + n) / 2) * Math.PI) / 180);
+  if (areaM2 / CELL_AREA_M2 > GRID_MAX_CELLS) return src.setData(EMPTY);
+
+  const features = [];
+  for (const h of h3.polygonToCells([[[w, s], [e, s], [e, n], [w, n], [w, s]]], H3_RES, true)) {
+    if (!visited.has(h) && cellInDong(f, h)) features.push(hexFeature(h));
+  }
+  src.setData({ type: 'FeatureCollection', features });
+}
+
+function refreshDongPanel() {
+  const f = dongs.current;
+  if (!f) return showDongMessage('행정동 밖');
+  const { n, k } = f.properties;
+  const pct = (dongs.explored / k) * 100;
+  $('dong').hidden = false;
+  $('dong-name').textContent = n.split(' ').slice(1).join(' '); // 시도는 빼고 보여 준다
+  $('dong-bar').style.width = `${pct}%`;
+  $('dong-pct').textContent = `${pct.toFixed(1)}%`;
+  $('dong-count').textContent = `${dongs.explored.toLocaleString('ko-KR')} / ${k.toLocaleString('ko-KR')}칸`;
+}
+
+function showDongMessage(msg) {
+  $('dong').hidden = false;
+  $('dong-name').textContent = msg;
+  $('dong-bar').style.width = '0%';
+  $('dong-pct').textContent = '';
+  $('dong-count').textContent = '';
 }
 
 /* ---------- GPS 추적 ---------- */

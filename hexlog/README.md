@@ -17,14 +17,44 @@ cd hexlog && python3 -m http.server 8787
 | 파일 | 역할 |
 |---|---|
 | `index.html` | 화면 껍데기와 스타일 |
-| `app.js` | 지도, 격자, GPS 추적, GPX 불러오기, 저장 |
-| `sw.js` | 오프라인 캐시 (앱 껍데기 + 지도 타일) |
+| `app.js` | 지도, 격자, 행정동·탐험률, GPS 추적, GPX 불러오기, 저장 |
+| `sw.js` | 오프라인 캐시 (앱 껍데기 + 본 적 있는 지도 타일·행정동 경계) |
 | `vendor/` | MapLibre GL JS 5.24, h3-js 4.5 (오프라인을 위해 로컬 사본) |
+| `data/dong/` | 시군구별 행정동 경계 256개 + 목록 `index.json` |
+| `tools/build-dong.mjs` | 원본 행정동 GeoJSON을 `data/dong/`으로 가공하는 스크립트 |
 
 - 지도: [MapLibre GL JS](https://maplibre.org) + [OpenFreeMap](https://openfreemap.org)
   벡터 타일(OpenStreetMap 기반, API 키 불필요). 건물은 `fill-extrusion`으로 3D 표시.
 - 격자: [Uber H3](https://h3geo.org) 해상도 10 — 육각형 변 약 76m, 폭 약 110~140m, 면적 약 15,000㎡.
+- 행정동: 통계청 SGIS 경계(가공 [vuski/admdongkor](https://github.com/vuski/admdongkor), 2026-07-01 판).
 - 저장: 방문한 칸은 IndexedDB(`hexlog` / `cells`)에 `{h: H3 인덱스, t: 최초 방문 시각}`으로 남는다.
+
+## 행정동과 탐험률
+
+화면 가운데가 속한 행정동의 경계를 그리고, 그 동에서 아직 안 가 본 칸을 회색 격자로,
+탐험률을 상단 패널에 보여 준다. 추적 중에는 지도가 내 위치를 따라가므로 곧 지금 있는 동이다.
+
+- 탐험률 = 동 안에서 방문한 칸 / 동 안의 전체 칸. 칸의 **중심**이 경계 안에 있으면 그 동의 칸이다.
+- 동 안의 전체 칸 수(`k`)는 빌드 때 미리 세어 둔다. 홍천군 내면처럼 4만 칸이 넘는 면도 있어
+  휴대폰에서 매번 세면 1초 넘게 멈추기 때문이다.
+- 경계는 시군구별 파일로 나뉘어 있어 지금 보는 시군구 것만 받는다(파일당 중앙값 37KB).
+  한 번 받은 시군구는 Service Worker가 캐시해 오프라인에서도 뜬다.
+- 경계는 10m 간격으로 단순화했다. 원본 경계와 비교하면 동별 칸 수가 중앙값 0%, 상위 1%에서
+  1.4% 다르다. 앱 안에서는 분모와 분자를 같은 경계로 세므로 다 돌면 정확히 100%가 된다.
+- 미탐험 격자는 화면에 보이는 범위만 계산하고, 3,000칸이 넘게 축소하면 그리지 않는다.
+
+### 행정동 데이터 갱신
+
+행정동은 해마다 분할·통합된다. [vuski/admdongkor](https://github.com/vuski/admdongkor)에 새 판이
+올라오면 받아서 다시 만들고, `sw.js`의 `SHELL_CACHE` 버전을 올린다.
+
+```sh
+cd hexlog
+npm i --no-save mapshaper
+node tools/build-dong.mjs HangJeongDong_verYYYYMMDD.geojson
+```
+
+출처 표기(`data/dong/SOURCE.txt`, 지도 우측 하단)는 CC BY 4.0·공공누리 1유형 조건이라 지우면 안 된다.
 
 ## 알아 둘 것
 
@@ -41,6 +71,5 @@ cd hexlog && python3 -m http.server 8787
 
 ## 아직 없는 것
 
-- 행정동 경계와 동별 탐험률 (경계 GeoJSON을 받아 와야 한다)
 - 동 단위 오프라인 지도 선다운로드 (PMTiles로 가능)
 - 사진 썸네일

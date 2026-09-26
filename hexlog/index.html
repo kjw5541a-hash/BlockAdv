@@ -28,6 +28,12 @@
   }
   #hud b { font-size: 18px; font-variant-numeric: tabular-nums; }
   #hud .sub { opacity: 0.65; }
+  #hud { min-width: 160px; }
+  #dong { margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.15); }
+  #dong-name { font-weight: 600; }
+  #dong .bar { height: 4px; margin: 4px 0 3px; border-radius: 2px; background: rgba(255,255,255,0.15); overflow: hidden; }
+  #dong-bar { display: block; height: 100%; width: 0; background: #ff7a18; transition: width 0.3s; }
+  #dong-pct { font-weight: 700; font-variant-numeric: tabular-nums; margin-right: 6px; }
 
   /* 하단 컨트롤 */
   #controls {
@@ -65,6 +71,8 @@
   #overlay .err { color: #ff8a65; }
 
   .maplibregl-ctrl-attrib { font-size: 10px; }
+  /* 출처 표기가 하단 버튼에 가리지 않게 버튼 줄 위로 올린다 */
+  .maplibregl-ctrl-bottom-right { bottom: calc(env(safe-area-inset-bottom) + 64px); }
 </style>
 </head>
 <body>
@@ -73,6 +81,11 @@
 <div id="hud">
   <div><b id="stat-total">0</b> 칸</div>
   <div class="sub">오늘 <span id="stat-today">0</span> · <span id="stat-gps">GPS 꺼짐</span></div>
+  <div id="dong" hidden>
+    <div id="dong-name"></div>
+    <div class="bar"><i id="dong-bar"></i></div>
+    <div><span id="dong-pct"></span><span class="sub" id="dong-count"></span></div>
+  </div>
 </div>
 
 <div id="controls">

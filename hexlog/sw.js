@@ -1,7 +1,7 @@
 /* 앱 껍데기는 설치할 때 통째로 받아 두고, 지도 타일은 한 번 본 것을 캐시에 남겨
    같은 곳을 다시 볼 때는 인터넷 없이도 뜨게 한다. */
 
-const SHELL_CACHE = 'hexlog-shell-v1';
+const SHELL_CACHE = 'hexlog-shell-v2';
 const TILE_CACHE = 'hexlog-tiles-v1';
 const TILE_LIMIT = 3000;          // 캐시에 남겨 둘 타일 개수 상한
 const TILE_EVICT = 500;           // 상한을 넘으면 오래된 것부터 이만큼 지운다
@@ -16,6 +16,7 @@ const SHELL = [
   './vendor/maplibre-gl.js',
   './vendor/maplibre-gl.css',
   './vendor/h3-js.umd.js',
+  './data/dong/index.json',
 ];
 
 self.addEventListener('install', (e) => {
